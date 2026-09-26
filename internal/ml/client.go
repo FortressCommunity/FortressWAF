@@ -8,36 +8,44 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
 
+// InspectionResult mirrors the ml-engine InspectResponse. The previous field
+// names (threat_score/is_malicious/category) did not exist in the response, so
+// every value silently decoded to its zero value and the WAF could never act
+// on an ML verdict.
 type InspectionResult struct {
-	ThreatScore  float64            `json:"threat_score"`
-	IsMalicious  bool               `json:"is_malicious"`
-	Category     string             `json:"category"`
-	Confidence   float64            `json:"confidence"`
-	Features     map[string]float64 `json:"features"`
-	BotScore     float64            `json:"bot_score"`
-	AnomalyScore float64            `json:"anomaly_score"`
+	AnomalyScore     float64 `json:"anomaly_score"`
+	IsAnomaly        bool    `json:"is_anomaly"`
+	AttackType       string  `json:"attack_type,omitempty"`
+	AttackConfidence float64 `json:"attack_confidence,omitempty"`
+	BotScore         float64 `json:"bot_score"`
+	RiskScore        int     `json:"risk_score"`
+	Fingerprint      string  `json:"fingerprint"`
+	ModelVersion     string  `json:"model_version"`
 }
 
+// ClassificationResult mirrors the ml-engine ClassifyResponse.
 type ClassificationResult struct {
-	Label         string             `json:"label"`
-	Score         float64            `json:"score"`
-	Probabilities map[string]float64 `json:"probabilities"`
+	AttackType   string  `json:"attack_type"`
+	Confidence   float64 `json:"confidence"`
+	ModelVersion string  `json:"model_version"`
 }
 
+// FingerprintResult mirrors the ml-engine FingerprintResponse.
 type FingerprintResult struct {
-	Fingerprint string  `json:"fingerprint"`
-	Confidence  float64 `json:"confidence"`
-	IsKnown     bool    `json:"is_known"`
+	Fingerprint   string `json:"fingerprint"`
+	HashAlgorithm string `json:"hash_algorithm"`
 }
 
+// BotScoreResult mirrors the ml-engine BotScoreResponse.
 type BotScoreResult struct {
-	Score   float64 `json:"score"`
-	IsBot   bool    `json:"is_bot"`
-	BotType string  `json:"bot_type"`
+	BotScore float64 `json:"bot_score"`
+	IsBot    bool    `json:"is_bot"`
+	BotType  string  `json:"bot_type,omitempty"`
 }
 
 type Client struct {
@@ -60,15 +68,19 @@ type circuitBreaker struct {
 	open      bool
 }
 
+// InspectRequest mirrors the ml-engine /v1/inspect request body.
+// Field names and shapes must match api/schemas.py exactly: the FastAPI
+// pydantic model rejects unknown keys and wrong types with a 422, and a
+// map[string][]string for query_params is one of those wrong types.
 type InspectRequest struct {
-	Method      string              `json:"method"`
-	Path        string              `json:"path"`
-	Headers     map[string]string   `json:"headers"`
-	Body        string              `json:"body"`
-	ContentType string              `json:"content_type"`
-	RealIP      string              `json:"real_ip"`
-	UserAgent   string              `json:"user_agent"`
-	QueryParams map[string][]string `json:"query_params"`
+	Method      string            `json:"method"`
+	Path        string            `json:"path"`
+	Headers     map[string]string `json:"headers"`
+	Body        string            `json:"body,omitempty"`
+	QueryParams map[string]string `json:"query_params"`
+	SourceIP    string            `json:"source_ip"`
+	UserAgent   string            `json:"user_agent"`
+	ContentType string            `json:"content_type,omitempty"`
 }
 
 func NewClient(endpoint string, timeoutSec, maxRetries int, fallbackMode string) *Client {
@@ -149,6 +161,49 @@ func (c *Client) callInspect(ctx context.Context, req *InspectRequest) (*Inspect
 	}
 
 	return &result, nil
+}
+
+// InspectRequestFromHTTP builds an inspect request from a raw request. Query
+// values are flattened to a single comma-joined string because the engine's
+// schema wants map[string]string, not map[string][]string; sending the latter
+// is a pydantic 422.
+func InspectRequestFromHTTP(r *http.Request) *InspectRequest {
+	headers := make(map[string]string, len(r.Header))
+	for k, v := range r.Header {
+		if len(v) > 0 {
+			headers[k] = v[0]
+		}
+	}
+
+	query := make(map[string]string, len(r.URL.Query()))
+	for k, v := range r.URL.Query() {
+		query[k] = strings.Join(v, ",")
+	}
+
+	req := &InspectRequest{
+		Method:      r.Method,
+		Path:        r.URL.Path,
+		Headers:     headers,
+		QueryParams: query,
+		UserAgent:   r.UserAgent(),
+		ContentType: r.Header.Get("Content-Type"),
+	}
+
+	if r.Body != nil {
+		if body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)); err == nil {
+			req.Body = string(body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+	}
+
+	if ip := strings.Split(r.RemoteAddr, ":"); len(ip) > 0 && ip[0] != "" {
+		req.SourceIP = ip[0]
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		req.SourceIP = strings.TrimSpace(strings.Split(xff, ",")[0])
+	}
+
+	return req
 }
 
 func (c *Client) Classify(ctx context.Context, data interface{}) (*ClassificationResult, error) {
@@ -269,14 +324,17 @@ func (c *Client) recordFailure() {
 	}
 }
 
+// fallbackResult is what Inspect returns when the engine is unreachable.
+// It deliberately reports no anomaly: failing open keeps the WAF available,
+// and the caller decides whether to trust it (config ml.fallback_mode).
 func (c *Client) fallbackResult() *InspectionResult {
 	switch c.fallback {
 	case "block":
-		return &InspectionResult{ThreatScore: 100, IsMalicious: true, BotScore: 100}
+		return &InspectionResult{AnomalyScore: 1.0, IsAnomaly: true, BotScore: 100, RiskScore: 100}
 	case "monitor":
-		return &InspectionResult{ThreatScore: 50, IsMalicious: false, BotScore: 50}
+		return &InspectionResult{AnomalyScore: 0.5, BotScore: 50, RiskScore: 50}
 	default:
-		return &InspectionResult{ThreatScore: 0, IsMalicious: false, BotScore: 0}
+		return &InspectionResult{}
 	}
 }
 
@@ -287,7 +345,8 @@ func (c *Client) SetAvailable(avail bool) {
 }
 
 func (c *Client) HealthCheck(ctx context.Context) error {
-	httpReq, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/v1/health", nil)
+	// The engine exposes /health at the root, not under /v1.
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/health", nil)
 	if err != nil {
 		return err
 	}
@@ -295,7 +354,14 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	// Drain before closing so the connection can be reused, and surface the
+	// close error instead of discarding it.
+	defer func() { _ = resp.Body.Close() }()
+	io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("health check returned status %d", resp.StatusCode)
+	}
 	return nil
 }
 
