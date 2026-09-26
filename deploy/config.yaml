@@ -1,633 +1,199 @@
-# FortressWAF Default Configuration
-# All settings are documented with defaults and descriptions.
+# FortressWAF deployment configuration
+# ---------------------------------------------------------------------------
+# Every key in this file maps to a field the Go binary actually reads
+# (see internal/config/config.go). The YAML decoder silently ignores unknown
+# keys, so anything not matching the schema is dead text. This file therefore
+# only contains settings that really take effect.
+#
+# Deliberately absent, and why:
+#   * server.*           - there is no "server" config section. The reverse
+#                          proxy port comes from the -proxy-port flag (default
+#                          80) and the admin API port from -admin-port
+#                          (default 8443). docker-compose publishes both.
+#   * rate_limit / session / reputation / geo / rules_cfg
+#                        - the config structs exist and parse, but no live
+#                          code path consumes them (the packages behind them
+#                          are not wired into the proxy). Omitted rather than
+#                          imply working features.
+#   * response_inspect   - the inspector is registered but its Inspect() is a
+#                          no-op stub, so it is disabled here.
+#   * cache / alerting / compliance / http3 / plugins / traffic / dry_run /
+#     secrets / monitoring / rate_limiting / database
+#                        - no matching config struct at all; they were
+#                          fictional in earlier revisions of this file.
+#   * rules: as a glob of rule files
+#                        - rules are not loaded from disk. Detection comes
+#                          entirely from the built-in inspectors enabled
+#                          below. (The bundled rules/ directory is unused.)
+#
+# ${VAR} references are expanded from the environment at load time.
 
-# --- Server Settings ---
-server:
-  # HTTP listen address and port
-  listen: ":8080"
-  # HTTPS listen address and port
-  listen_tls: ":8443"
-  # Maximum request body size in bytes (10MB default)
-  max_body_size: 10485760
-  # Read timeout in seconds
-  read_timeout: 30
-  # Write timeout in seconds
-  write_timeout: 30
-  # Idle timeout in seconds for keep-alive connections
-  idle_timeout: 120
-  # Maximum header size in bytes (8KB default)
-  max_header_size: 8192
-  # Enable HTTP/2 support
-  enable_http2: true
-  # Enable HTTP/3 (QUIC) support
-  enable_http3: false
-  # Number of proxy workers / goroutines
-  workers: 4
-  # Enable PROXY protocol support for load balancers
-  proxy_protocol: false
-  # Trusted proxy CIDR ranges (for X-Forwarded-For)
-  trusted_proxies:
-    - "10.0.0.0/8"
-    - "172.16.0.0/12"
-    - "192.168.0.0/16"
-
-# --- Admin API Settings ---
+# --- Admin API + dashboard login -------------------------------------------
 admin:
-  # Admin API listen address
-  listen: ":8443"
-  # Enable admin API
   enabled: true
-  # JWT secret for admin authentication (change in production!)
-  jwt_secret: "${ADMIN_JWT_SECRET:-change-me-in-production}"
-  # JWT token expiration in hours
-  jwt_expiry: 24
-  # TLS certificate for admin API
-  tls_cert: ""
-  tls_key: ""
-  # Rate limit for admin API (requests per minute)
-  rate_limit: 60
-  # Allowed IPs for admin API (empty = all)
-  allowed_ips: []
-  # CORS settings for dashboard
-  cors:
-    enabled: true
-    allowed_origins:
-      - "*"
-    allowed_methods:
-      - GET
-      - POST
-      - PUT
-      - DELETE
-      - PATCH
+  port: 8443
+  # Dashboard credentials: any value in this list logs in as admin.
+  # CHANGE THIS before the project leaves your laptop.
+  api_keys:
+    - fortress-demo-admin
 
-# --- Site / Upstream Configuration ---
+# --- Protected site ---------------------------------------------------------
 sites:
-  # List of protected upstream services
-  # Each site represents a backend application
-  - name: "default"
-    # Domain names this site handles
+  # FindSiteByDomain matches the Host header exactly, and the handler falls
+  # back to the first site when nothing matches, so a single entry covers a
+  # local demo regardless of the hostname used.
+  - name: default
     domains:
-      - "example.com"
-      - "*.example.com"
-    # Upstream backend servers (load-balanced)
-    upstreams:
-      - "http://app:3000"
-    # Enable TLS for this site
-    tls_enabled: false
-    # TLS certificate paths (leave empty to use auto-cert from server)
-    tls_cert: ""
-    tls_key: ""
-    # Enable automatic Let's Encrypt certificate
-    auto_cert: false
-    # Auto-cert email for Let's Encrypt notifications
-    auto_cert_email: ""
-    # Request modification rules
-    request_modifiers:
-      # Add/remove headers
-      add_headers:
-        X-FortressWAF: "true"
-        X-Forwarded-Proto: "https"
-      remove_headers: []
-    # Response modification rules
-    response_modifiers:
-      add_headers:
-        X-Content-Type-Options: "nosniff"
-        X-Frame-Options: "DENY"
-        X-XSS-Protection: "1; mode=block"
-        Referrer-Policy: "strict-origin-when-cross-origin"
-        Strict-Transport-Security: "max-age=31536000; includeSubDomains"
-        Permissions-Policy: "camera=(), microphone=(), geolocation=()"
-      remove_headers:
-        - "Server"
-        - "X-Powered-By"
-    # Rate limiting configuration per-site
-    rate_limit:
-      enabled: true
-      requests_per_second: 100
-      burst: 200
-      # Per-IP rate limiting
-      per_ip:
-        enabled: true
-        requests_per_second: 10
-        burst: 20
+      - localhost
+    # The demo backend: the dashboard container itself, so benign requests
+    # get a real 200 while attacks are blocked at the WAF.
+    upstream: http://dashboard:3000
+    waf_enabled: true
 
-# --- Rule Engine Settings ---
-rules:
-  # Path to rule files (glob pattern)
-  paths:
-    - "/etc/fortresswaf/rules/**/*.yaml"
-    - "/etc/fortresswaf/rules/**/*.yml"
-  # Default action when no rule matches
-  default_action: "allow"
-  # Whether to stop processing rules after a match
-  stop_on_match: true
-  # Rule evaluation mode: "first-match" or "all-match"
-  evaluation_mode: "first-match"
-  # Enable anomaly scoring (accumulate scores instead of blocking immediately)
-  anomaly_scoring: false
-  # Threshold for anomaly score to trigger block
-  anomaly_threshold: 10
-  # Exclude certain IPs from rule enforcement
-  exclude_ips:
-    - "127.0.0.1"
-    - "::1"
-  # Exclude certain paths from rule enforcement
-  exclude_paths:
-    - "/health"
-    - "/metrics"
-    - "/favicon.ico"
-  # Exclude certain User-Agents
-  exclude_user_agents:
-    - "FortressWAF-HealthCheck/1.0"
+# --- Detection engine -------------------------------------------------------
+# Each module below is a built-in inspector. All of these are real
+# implementations (verified) and are what the WAF actually blocks with.
 
-# --- Rate Limiting (Global) ---
-rate_limiting:
-  # Global rate limiting (across all sites)
+sqli:  { enabled: true }
+xss:   { enabled: true }
+rce:   { enabled: true }
+ddos:  { enabled: true }
+protocol: { enabled: true }
+bot:   { enabled: true }
+api_protect: { enabled: true }
+upload: { enabled: true }
+ja3:   { enabled: true }      # only fires on TLS traffic
+desync: { enabled: true }     # HTTP request smuggling (CL.TE / TE.CL)
+parser_hardening: { enabled: true }
+
+credential:
   enabled: true
-  # Redis-based rate limiting backend
-  backend: "redis"
-  # Default rate limit (requests per second)
-  default_rps: 1000
-  # Default burst size
-  default_burst: 2000
-  # Per-IP rate limiting
-  per_ip:
-    enabled: true
-    rps: 100
-    burst: 200
-    # Track by: "ip", "ip_ua" (IP+UserAgent), or "session"
-    track_by: "ip"
-  # Per-path rate limiting
-  per_path:
-    enabled: true
-    rules:
-      - path: "/api/v1/login"
-        rps: 5
-        burst: 10
-      - path: "/api/v1/register"
-        rps: 3
-        burst: 6
-      - path: "/api/v1/password-reset"
-        rps: 2
-        burst: 4
-  # Rate limiting response
-  response:
-    code: 429
-    body: '{"error":"Rate limit exceeded","retry_after":%d}'
-    headers:
-      Retry-After: "%d"
+  max_attempts: 5
+  window_sec: 300
+  block_duration_sec: 900
+  login_paths:
+    - /api/v1/login
+    - /login
 
-# --- ML Engine Settings ---
-ml:
-  # ML-based threat detection
+# Disabled below, with reasons:
+
+# adaptive issues interactive JS/CAPTCHA challenges; it needs a real browser
+# flow and would stall a curl-driven demo. Enable to demo it.
+adaptive:
+  enabled: false
+  js_script_path: ""
+  tarpit_delay_ms: 1500
+  captcha_score: 0.8
+  challenge_ttl: 300
+
+# behavioural scoring can block benign bursts (e.g. clicking through the demo
+# quickly). Tune threshold/max_requests up before enabling.
+behavioral:
+  enabled: false
+  reputation: false     # toggle the reputation signal
+  velocity: false       # toggle the request-velocity signal
+  path_entropy: false   # toggle the path-entropy signal
+  threshold: 0.85
+  window_sec: 60
+  max_requests: 100
+
+# Registered but currently a no-op stub; see header comment.
+response_inspect:
+  enabled: false
+
+# eBPF telemetry needs CAP_BPF and a host NIC, unavailable in the container.
+ebpf:
+  enabled: false
+  interface: ""
+  port: 0
+  sample_rate: 0
+
+# No WebAssembly modules are bundled with the release.
+wasm:
+  enabled: false
+  module_dir: ""
+  max_memory_pages: 0
+  modules: []
+
+# The remaining inspectors need external services to be meaningful; they are
+# inert without them.
+jwt:      { enabled: false }
+oauth:    { enabled: false }
+mtls:     { enabled: false }
+captcha:  { enabled: false }
+graphql:  { enabled: false }   # no GraphQL backend in the demo stack
+websocket: { enabled: false }
+soap:     { enabled: false }
+grpc:     { enabled: false }
+
+# --- Performance isolation --------------------------------------------------
+performance:
   enabled: true
-  # ML engine URL (gRPC or HTTP)
-  engine_url: "http://ml-engine:8000"
-  # Connection timeout in seconds
-  timeout: 5
-  # Inference timeout in seconds
-  inference_timeout: 2
-  # Models to load
-  models:
-    - name: "anomaly-detection"
-      version: "1.0"
-      threshold: 0.85
-    - name: "bot-detection"
-      version: "1.0"
-      threshold: 0.75
-    - name: "payload-classifier"
-      version: "1.0"
-      threshold: 0.90
-  # Cache ML inferences in Redis (seconds)
-  cache_ttl: 300
-  # Fallback action when ML engine is unavailable
-  fallback_action: "allow"
-  # Sampling rate for ML analysis (1.0 = all traffic, 0.1 = 10%)
-  sample_rate: 1.0
-  # Features to extract for ML analysis
-  features:
-    - "request_body"
-    - "query_params"
-    - "headers"
-    - "path"
-    - "method"
-    - "user_agent"
-    - "content_type"
+  max_regex_ms: 1000
+  max_wasm_ms: 5000
+  max_memory_mb: 512
+  max_concurrency: 0       # 0 = unlimited
+  circuit_threshold: 0
 
-# --- Logging Settings ---
+shadow_mode: { enabled: false }   # log-only mode, never blocks
+learning_mode: { enabled: false }
+
+# --- Logging ----------------------------------------------------------------
 logging:
-  # Log level: debug, info, warn, error, fatal
-  level: "info"
-  # Log format: "json" or "text"
-  format: "json"
-  # Log output: "stdout", "stderr", or file path
-  output: "stdout"
-  # Access log settings
-  access_log:
-    enabled: true
-    # Log format string (Go template-like)
-    # Available fields: remote_ip, method, path, status, body_bytes, duration, user_agent, referer, rule_id, action
-    format: '{"remote_ip":"%s","method":"%s","path":"%s","status":%d,"bytes":%d,"duration":%f,"user_agent":"%s","referer":"%s","rule_id":"%s","action":"%s"}'
-    # Log request body for blocked requests
-    log_request_body: true
-    # Log response body for blocked requests
-    log_response_body: false
-    # Maximum body size to log (bytes)
-    max_body_log_size: 4096
-  # Audit log (all security events)
-  audit_log:
-    enabled: true
-    output: "/var/log/fortresswaf/audit.log"
-    # Log format: "json" or "syslog"
-    format: "json"
-    # Include full request/response in audit
-    include_full_request: false
-    include_full_response: false
-  # Error log
-  error_log:
-    enabled: true
-    output: "/var/log/fortresswaf/error.log"
-  # Syslog forwarding
-  syslog:
-    enabled: false
-    endpoint: "udp://logs.example.com:514"
-    facility: "local0"
-    tag: "fortresswaf"
+  level: info               # debug with the -dev flag instead
+  format: json
+  output: stdout
 
-# --- TLS / SSL Settings ---
+# --- TLS --------------------------------------------------------------------
+# Off: the demo stack serves plain HTTP on port 80. The admin API and the
+# proxy both listen in cleartext, which is why the compose healthcheck uses
+# http://. Turn this on and provide cert_file/key_file for TLS demos.
 tls:
-  # Whether to enable TLS globally
-  enabled: true
-  # Default TLS certificate (auto-generated if empty)
+  enabled: false
   cert_file: ""
   key_file: ""
-  # Minimum TLS version
   min_version: "1.2"
-  # Maximum TLS version
-  max_version: "1.3"
-  # TLS cipher suites (Golang format, only TLS 1.0-1.2)
-  cipher_suites:
-    - "TLS_AES_128_GCM_SHA256"
-    - "TLS_AES_256_GCM_SHA384"
-    - "TLS_CHACHA20_POLY1305_SHA256"
-    - "ECDHE-ECDSA-AES128-GCM-SHA256"
-    - "ECDHE-RSA-AES128-GCM-SHA256"
-    - "ECDHE-ECDSA-AES256-GCM-SHA384"
-    - "ECDHE-RSA-AES256-GCM-SHA384"
-    - "ECDHE-ECDSA-CHACHA20-POLY1305"
-    - "ECDHE-RSA-CHACHA20-POLY1305"
-  # Prefer server cipher suites
-  prefer_server_ciphers: true
-  # Enable OCSP stapling
-  ocsp_stapling: false
-  # Enable session tickets
-  session_tickets: true
-  # Session ticket key (rotate periodically)
-  session_ticket_key: ""
-  # Enable client certificate authentication (mTLS)
-  client_auth:
-    enabled: false
-    # CA certificate for verifying client certs
-    ca_cert: ""
-    # Verification mode: "require", "verify-if-given", "require-and-verify"
-    mode: "require-and-verify"
-  # Let's Encrypt auto-certificate configuration
-  auto_cert:
-    enabled: false
-    email: "admin@example.com"
-    # Staging directory for testing (set to false for production)
-    use_staging: false
-    # Certificate renewal threshold (days before expiry)
-    renew_before: 30
+  http2_enabled: false
+  ocsp_enabled: false
+  acme_enabled: false
+  acme_email: ""
+  acme_domains: []
+  acme_cache_dir: ""
 
-# --- Cache Settings ---
-cache:
-  # Response caching for static assets
+# --- Database ---------------------------------------------------------------
+# The proxy opens this connection on startup (github.com/lib/pq driver).
+# ${DATABASE_URL} is set by docker-compose.
+db:
+  driver: postgres
+  dsn: ${DATABASE_URL}
+  max_open: 25
+  max_idle: 5
+
+# --- Metrics ----------------------------------------------------------------
+# Served at <path> on <port> by a dedicated listener, in addition to the
+# admin API's /metrics on 8443. docker-compose does not publish this port;
+# Prometheus scrapes the admin API instead.
+prometheus:
   enabled: true
-  # Cache backend: "redis" or "memory"
-  backend: "redis"
-  # Default cache TTL in seconds
-  default_ttl: 300
-  # Maximum cache size (entries, 0 = unlimited)
-  max_entries: 10000
-  # Cache key prefix
-  key_prefix: "cache:"
-  # Cache only specific content types
-  content_types:
-    - "text/css"
-    - "text/javascript"
-    - "application/javascript"
-    - "image/png"
-    - "image/jpeg"
-    - "image/gif"
-    - "image/svg+xml"
-    - "application/font-woff2"
-    - "application/font-woff"
-  # Bypass cache for paths matching these patterns
-  bypass_paths:
-    - "/api/"
-    - "/admin/"
-    - "/login"
-    - "/logout"
-  # Cache key parameters (query params to include in cache key)
-  cache_key_params:
-    - "v"
-    - "version"
-    - "_t"
+  path: /metrics
+  port: 9090
 
-# --- Database Settings ---
-database:
-  # Primary database (PostgreSQL)
-  primary:
-    driver: "postgres"
-    url: "${DATABASE_URL:-postgres://fortress:fortress@postgres:5432/fortresswaf}"
-    max_open_conns: 25
-    max_idle_conns: 10
-    conn_max_lifetime: 300
-    conn_max_idle_time: 60
-  # Read replica (optional)
-  replica:
-    enabled: false
-    url: ""
-  # Migration settings
-  migrations:
-    enabled: true
-    path: "/etc/fortresswaf/migrations"
-    auto_migrate: true
-  # Connection pool settings
-  pool:
-    health_check_interval: 30
-
-# --- Alerting / Notification Settings ---
-alerting:
-  # Alert integration for security events
-  enabled: true
-  # Minimum severity to trigger alert: "info", "low", "medium", "high", "critical"
-  min_severity: "high"
-  # Alert cooldown in seconds (prevents alert storms)
-  cooldown: 300
-  # Slack webhook
-  slack:
-    enabled: false
-    webhook_url: ""
-    channel: "#security-alerts"
-    username: "FortressWAF"
-  # Email (SMTP)
-  email:
-    enabled: false
-    smtp_host: ""
-    smtp_port: 587
-    smtp_user: ""
-    smtp_password: ""
-    smtp_tls: true
-    from: "fortresswaf@example.com"
-    to:
-      - "security@example.com"
-  # PagerDuty integration
-  pagerduty:
-    enabled: false
-    routing_key: ""
-    severity_map:
-      critical: "critical"
-      high: "error"
-      medium: "warning"
-      low: "info"
-  # Webhook (generic)
-  webhook:
-    enabled: false
-    url: ""
-    headers:
-      X-API-Key: ""
-    method: "POST"
-    timeout: 10
-  # Microsoft Teams webhook
-  teams:
-    enabled: false
-    webhook_url: ""
-  # OpsGenie integration
-  opsgenie:
-    enabled: false
-    api_key: ""
-    region: "us"
-
-# --- Compliance Settings ---
-compliance:
-  # PCI DSS compliance mode
-  pci_dss:
-    enabled: false
-    # Mask credit card numbers in logs
-    mask_credit_cards: true
-    # Mask PAN in request/response bodies
-    mask_pan: true
-    # Require TLS 1.2+ for all connections
-    enforce_tls: true
-    # Log all security events for audit trail
-    audit_trail: true
-    # Retention period for logs (days)
-    log_retention_days: 365
-  # GDPR compliance mode
-  gdpr:
-    enabled: false
-    # Mask PII in logs
-    mask_pii: true
-    # PII patterns to mask
-    pii_patterns:
-      - "email"
-      - "phone"
-      - "ssn"
-      - "credit_card"
-      - "ip_address"
-    # Anonymize IP addresses in logs (last octet)
-    anonymize_ips: true
-    # Right to erasure: enable data deletion endpoints
-    enable_erasure: false
-  # HIPAA compliance mode
-  hipaa:
-    enabled: false
-    # Encrypt all PHI in logs
-    encrypt_phi: true
-    # Audit log access
-    audit_access: true
-    # Minimum TLS version 1.2
-    enforce_tls: true
-  # SOC 2 compliance
-  soc2:
-    enabled: false
-    # Log all configuration changes
-    audit_config_changes: true
-    # Monitor system availability
-    monitor_availability: true
-    # Retention period (days)
-    retention_days: 90
-
-# --- Metrics & Monitoring ---
-monitoring:
-  # Prometheus metrics endpoint
-  prometheus:
-    enabled: true
-    path: "/metrics"
-    # Collect detailed metrics per-rule
-    per_rule_metrics: true
-    # Collect metrics per-site
-    per_site_metrics: true
-  # OpenTelemetry tracing
-  tracing:
-    enabled: false
-    exporter: "otlp"
-    endpoint: "http://otel-collector:4317"
-    sample_rate: 0.1
-    service_name: "fortresswaf"
-    include_body: false
-    attributes:
-      deployment.environment: "production"
-  # Health check endpoint
-  health:
-    path: "/health"
-    # Include detailed component status
-    detailed: true
-
-# --- HTTP/3 (QUIC) Support ---
-http3:
+# --- ML sidecar -------------------------------------------------------------
+# Honest status: the config field is read (and validated), but the proxy does
+# not yet send requests to the ML engine - detection is rule-based. Wiring is
+# tracked as follow-up work; do not assume traffic is ML-inspected today.
+ml:
   enabled: false
-  port: 443
-  cert_file: ""
-  key_file: ""
+  endpoint: ${ML_ENGINE_URL}
+  timeout_sec: 5
+  max_retries: 2
+  fallback_mode: allow
+  min_score: 0.5
+  model_name: payload-classifier
 
-# --- GraphQL Protection ---
-graphql:
-  enabled: true
-  max_depth: 10
-  max_cost: 1000
-  max_aliases: 15
-  max_batch_size: 1
-  max_tokens: 10000
-  block_introspection: false
-  block_schema: true
-  allowed_operations:
-    - "query"
-    - "mutation"
-  strict_validation: true
-
-# --- JWT/OAuth Authentication ---
-jwt:
-  enabled: false
-  jwks_url: ""
-  issuers: []
-  audiences: []
-  algorithms:
-    - "RS256"
-    - "ES256"
-  secret: ""
-
-oauth:
-  enabled: false
-  introspection_url: ""
-  client_id: ""
-  client_secret: ""
-  token_type_hint: "access_token"
-
-# --- mTLS Client Certificate Authentication ---
-mtls:
-  enabled: false
-  cert_file: ""
-  key_file: ""
-  ca_file: ""
-  client_auth: "no-client-certs"
-  skip_verify: false
-  policy_oid: ""
-  verify_depth: 5
-  fail_on_error: true
-  early_auth: false
-  username_header: "X-Client-Cert-User"
-
-# --- Plugin System (WebAssembly) ---
-plugins:
-  enabled: false
-  dir: "./plugins"
-  allowed_apis:
-    - "log"
-    - "get_header"
-    - "set_header"
-    - "block"
-    - "allow"
-
-# --- Traffic Management (Canary/A-B/Shadow) ---
-traffic:
-  canary:
-    - name: ""
-      match:
-        path_prefix: ""
-      primary: ""
-      canary: ""
-      weight: 0
-      sticky_header: ""
-      cookie_name: ""
-      session_ttl: 24h
-  shadow:
-    - name: ""
-      match:
-        path_prefix: ""
-      shadow: ""
-      percent: 0
-      header_injection: true
-      response_timeout: 5s
-      ignore_response: true
-
-# --- Request/Response Rewriting ---
-rewrite_rules:
-  - name: "remove-sensitive-headers"
-    conditions:
-      - field: "headers"
-        name: "X-Internal-Token"
-        operator: "exists"
-    actions:
-      - type: "header"
-        operation: "remove"
-        name: "X-Internal-Token"
-  - name: "redirect-old-paths"
-    conditions:
-      - field: "path"
-        operator: "prefix"
-        value: "/old/"
-    actions:
-      - type: "url"
-        operation: "redirect"
-        redirect_url: "/new{{.path}}"
-        code: 301
-
-# --- Dry-Run / Staging Mode ---
-dry_run:
-  enabled: false
-  log_file: "/var/log/fortresswaf/dryrun.log"
-  output_format: "json"
-  include_body: false
-  silent: false
-
-# --- Secrets Management (Vault) ---
-secrets:
-  provider: "env"
-  vault:
-    address: ""
-    token: "${VAULT_TOKEN}"
-    mount_path: "kv"
-    kv_version: 2
-    namespace: ""
-
-# --- SIEM Integration ---
+# --- SIEM export ------------------------------------------------------------
 siem:
   enabled: false
   export_interval: 10s
   batch_size: 100
-  exporters:
-    - type: "splunk"
-      enabled: false
-      url: ""
-      token: "${SPLUNK_TOKEN}"
-      index: "fortresswaf"
-      verify_ssl: true
-    - type: "elasticsearch"
-      enabled: false
-      url: "https://elk.example.com:9200"
-      index: "fortresswaf-logs"
-      username: ""
-      password: ""
+  exporters: []

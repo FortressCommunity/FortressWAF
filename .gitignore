@@ -194,3 +194,4 @@ benchmark.txt
 # Build artifacts
 /ctl
 /healthcheck
+/proxy

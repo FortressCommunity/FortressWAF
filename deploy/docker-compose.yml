@@ -1,5 +1,14 @@
 version: '3.8'
 
+# Only services that something actually consumes are listed here:
+#   fortresswaf -> postgres (startup connectivity check)
+#   fortresswaf -> ml-engine (HTTP sidecar, see deploy/config.yaml)
+#   dashboard   -> fortresswaf admin API (8443)
+#
+# Earlier revisions also ran redis, nats and opensearch. Nothing in the Go
+# code or the Python sidecar connects to them, so they were removed rather
+# than kept as containers that look like infrastructure but do nothing.
+
 services:
   fortresswaf:
     image: fortresswaf/fortresswaf:latest
@@ -11,24 +20,17 @@ services:
       - "443:443"
       - "8443:8443"
     depends_on:
-      redis:
-        condition: service_healthy
       postgres:
         condition: service_healthy
       ml-engine:
         condition: service_healthy
-      nats:
-        condition: service_healthy
     environment:
       - CONFIG_PATH=/etc/fortresswaf/config.yaml
-      - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgres://fortress:fortress@postgres:5432/fortresswaf
       - ML_ENGINE_URL=http://ml-engine:8000
-      - NATS_URL=nats://nats:4222
     volumes:
       - ./config.yaml:/etc/fortresswaf/config.yaml
       - fortress-data:/var/lib/fortresswaf
-      - ./rules:/etc/fortresswaf/rules
     # /health is served by the admin API on 8443, not the proxy listener.
     # The distroless image has no shell, so the probe is a static Go binary.
     healthcheck:
@@ -46,7 +48,6 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - REDIS_URL=redis://redis:6379
       - MODEL_DIR=/app/models
     volumes:
       - ml-models:/app/models
@@ -86,48 +87,6 @@ services:
     networks:
       - fortress-net
 
-  redis:
-    image: redis:7-alpine
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-fortress}
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - fortress-net
-
-  nats:
-    image: nats:2.10-alpine
-    # -m 8222 enables the monitoring port that the /healthz probe needs;
-    # without it the healthcheck below can never succeed.
-    command: -js -m 8222
-    ports:
-      - "4222:4222"
-      - "8222:8222"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - fortress-net
-
-  opensearch:
-    image: opensearchproject/opensearch:2.12.0
-    environment:
-      - discovery.type=single-node
-      - plugins.security.disabled=true
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_PASSWORD:-FortressWAF123!}
-    ports:
-      - "9200:9200"
-    volumes:
-      - opensearch-data:/usr/share/opensearch/data
-    networks:
-      - fortress-net
-
 networks:
   # Explicitly named (not project-prefixed) so the monitoring stack can attach
   # to it as an external network and reach the WAF admin API.
@@ -137,7 +96,5 @@ networks:
 
 volumes:
   postgres-data:
-  redis-data:
-  opensearch-data:
   fortress-data:
   ml-models:
