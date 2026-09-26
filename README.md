@@ -1,207 +1,286 @@
 # FortressWAF
 
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev/)
 
-**Self-hosted WAF for modern APIs.** FortressWAF is a Go reverse proxy that inspects REST, GraphQL, WebSocket, gRPC, and SOAP traffic through a configurable detection pipeline. Configuration is YAML, changes apply at runtime. Single binary, no external dependencies required.
+**A self-hosted Web Application Firewall / API security gateway, written in Go.**
+FortressWAF is a reverse proxy that inspects HTTP traffic through a configurable
+detection pipeline: SQL injection, XSS, RCE, request smuggling, bot traffic, and
+more. Configuration is YAML and reloads at runtime. It ships as a single Go
+binary, plus an optional Python ML sidecar and a Next.js dashboard.
+
+> **Project status.** This is an academic showcase project, not a commercial
+> product. Feature tables below label every module **stable** (implemented,
+> enabled in the shipped config, tested against real payloads), **implemented,
+> off by default** (real code that needs an external service or extra setup),
+> **experimental** (works, but with known caveats), or **not implemented**.
+> Known gaps are collected in [Known Limitations](#known-limitations) rather
+> than papered over.
 
 ---
 
-## Request Flow
+## Request flow
 
 ```mermaid
 flowchart LR
-    C[Client] --> T[TLS Termination<br/>HTTP/2, ACME, OCSP, mTLS]
-    T --> P[Request Parser<br/>Headers, Body, Params]
-    P --> A[Auth Layer<br/>JWT, OAuth, CAPTCHA, API Keys]
-    A --> PL[Protocol Inspection<br/>GraphQL · gRPC · SOAP · WebSocket]
-    PL --> D[Detection Pipeline]
-
-    subgraph D[ ]
-        direction TB
-        S[SQL Injection]
-        X[XSS]
-        R[RCE]
-        B[Bot Detection]
-        DD[DDoS / Rate Limit]
-        CR[Credential Protection]
-        AP[API Protection]
-        PR[Protocol Anomaly]
-        UF[Upload Security]
-    end
-
-    D --> SC[Scoring Engine<br/>Block · Challenge · Rate-Limit · Allow]
+    C[Client] --> T[Listener<br/>plain HTTP or TLS]
+    T --> P[Request Parser<br/>Headers · Body · Params]
+    P --> D[Detection Pipeline]
+    D --> SC[Decision<br/>Block · Monitor · Allow]
     SC --> UP[Proxy Forwarder]
     UP --> OR[Origin Server]
-
-    SC -.-> LOG[SIEM Export<br/>Elasticsearch · Splunk · JSON Log]
+    SC -.-> LOG[Audit Log + JSON Logging]
     SC -.-> PROM[Prometheus Metrics]
-    SC -.-> ML[Ml Sidecar<br/>Optional · Python]
+    SC -.-> ML[ML Sidecar<br/>contract defined, not wired]
 ```
 
 ---
 
 ## Features
 
-### Core Detection
+### Detection engine
 
-| Module | What It Detects |
-|---|---|
-| **SQL Injection** | Tautology, UNION, time-based blind, error-based, stacked queries, encoded variants |
-| **Cross-Site Scripting** | Stored, reflected, DOM, event handlers, script tags, obfuscated JS |
-| **RCE** | Shell injection, SSTI, EL injection, deserialization, Log4Shell, file inclusion |
-| **Path Traversal** | Directory traversal, null bytes, encoding bypass |
-| **API Protection** | OpenAPI schema enforcement, shadow API discovery, mass assignment |
-| **Protocol Anomaly** | HTTP verb tampering, header smuggling, malformed requests, method override |
+Every module below is a built-in inspector. Those marked *stable* are enabled by
+`deploy/config.yaml` and are what the WAF actually blocks traffic with.
 
-### Authentication & Access
+| Module | Rule IDs | Status |
+|---|---|---|
+| SQL injection (tautology, UNION, stacked queries, blind/time-based, encoding bypass) | SQLI001–023 | **stable** |
+| Cross-site scripting (tag, event handler, attribute, obfuscated) | XSS001+ | **stable** |
+| RCE / command injection, SSTI, EL injection, deserialization gadgets, Log4Shell | RCE001+ | **stable** |
+| Path traversal & parser hardening (encoding, null bytes) | PARSER_001+ | **stable** |
+| HTTP request smuggling (CL.TE / TE.CL) | DSYNC_001+ | **stable** |
+| Protocol anomalies (verb tampering, header smuggling, malformed requests) | PROT001+ | **stable** |
+| Bot detection (signature list; `curl` is listed as a bad bot) | BOT+ | **stable** |
+| DDoS protection (slow loris, slow POST) | DDoS000+ | **stable** |
+| Credential protection (brute force, stuffing, spray, lockout) | CRED+ | **stable** |
+| File upload validation (MIME, extension, magic bytes) | UPL001+ | **stable** |
+| API protection (mass assignment, schema hints) | API+ | **stable** |
+| JA3 TLS fingerprinting | JA3_001+ | **stable** (TLS traffic only) |
+| GraphQL inspection (depth, cost, aliases) | — | implemented, off by default |
+| WebSocket frame validation | — | implemented, off by default |
+| gRPC per-service rate limiting | GRPC001+ | implemented, off by default |
+| SOAP/XML nesting depth | SOAP001+ | implemented, off by default |
+| JWT / OAuth 2.0 introspection / mTLS / CAPTCHA | — | implemented, off by default |
+| Adaptive challenge (JS / CAPTCHA interstitial) | — | experimental, off by default |
+| Behavioural scoring (velocity, path entropy, reputation) | — | experimental, off by default |
+| Response body inspection (data leakage) | — | **not implemented** — registered stub, `Inspect()` is a no-op |
+| eBPF telemetry, WASM sandbox | — | **not implemented** — stubs behind build tags |
 
-| Feature | Implementation |
-|---|---|
-| **JWT Validation** | JWKS cache, RS256/ES256/HS256, issuer/audience validation, scope check |
-| **OAuth 2.0 Introspection** | RFC 7662, token cache, scope and role verification |
-| **mTLS** | CA validation, policy OID, certificate info extraction |
-| **CAPTCHA** | reCAPTCHA v2/v3, hCaptcha, configurable score threshold |
-| **API Key Management** | Bearer token validation against configured keys |
-
-### Traffic & Rate Management
-
-| Feature | Details |
-|---|---|
-| **Rate Limiting** | Token bucket, leaky bucket, sliding window, fixed window — per-IP, per-route, global |
-| **DDoS Protection** | Slow loris detection, slow POST, cache busting, adaptive rate limits |
-| **Bot Detection** | Known bot lists, headless browser detection, JS challenge generation |
-| **IP Reputation** | TOR/proxy/VPN detection, ASN filtering, CIDR allow/block lists |
-| **Session Tracking** | Cookie-based session management with Redis backend |
-
-### Protocol-Specific Inspection
-
-| Protocol | Capabilities |
-|---|---|
-| **GraphQL** | Query depth limiting, cost analysis, alias count, batch size, field restrictions |
-| **WebSocket** | Frame type validation, rate limiting, message size, origin check |
-| **gRPC** | Per-service rate limiting, message size limits, content-type detection |
-| **SOAP/XML** | XML nesting depth validation, content-type enforcement |
-
-### Credential Protection
-
-- Brute force detection with exponential backoff per IP
-- Credential stuffing detection per user hash
-- Password spray detection across accounts
-- Account lockout with configurable thresholds (attempts, window, duration)
-- Login path auto-detection (`/login`, `/auth`, `/signin`)
+Detection is measured, not assumed: the whole `ml-engine` training corpus
+(1,126 payloads across 11 categories) is replayed through the engine in
+`tests/unit/payload_corpus_test.go`. Measured detection rates: XXE 100%, XSS
+99%, deserialization 97%, webshell 80%, LDAP 78%, SQLi 78%, command injection
+66%, SSTI 64%, RCE 62%, LFI 59%, path traversal 57%.
 
 ### Observability
 
-| Tool | Integration |
+| Feature | Status |
 |---|---|
-| **Prometheus** | Metrics endpoint on configurable port/path (requests, latency, decisions, active connections) |
-| **Grafana** | Pre-built dashboards for overview, security, compliance, ML |
-| **Elasticsearch** | SIEM event export, index templates included |
-| **Kibana** | Dashboard definitions for security events and ML anomalies |
-| **Splunk** | Event export via HTTP event collector |
-| **Health Probes** | `/health`, `/ready`, `/live` endpoints for K8s |
+| Prometheus metrics (`/metrics` on the admin API, plus a dedicated port) | **stable** |
+| Structured JSON logging (slog) | **stable** |
+| Tamper-evident audit log (hash-chained entries, admin API `/api/v1/audit`) | **stable** |
+| SIEM export (Elasticsearch, Splunk HEC) | implemented, off by default |
+| Grafana dashboards (`deploy/monitoring/grafana/dashboards/*.json`) | **not verified** — definitions are bundled but were never rendered end to end |
 
-### Content Security
+### Management API
 
-- File upload validation (MIME signatures, extension allow/block lists, magic bytes)
-- Response body inspection for data leakage
-- Configurable request size limits per endpoint
-- HTTP/2 via TLS configuration
-- ACME/LetsEncrypt automatic certificate management
-- OCSP stapling placeholder
+The admin API (`/api/v1` on the admin port) exposes auth/login, health, status,
+config read/reload, sites, rules, compliance assessment, and the audit log. It
+requires a bearer token obtained from `POST /api/v1/auth/login`.
 
 ---
 
-## Quick Start
+## Quick start
+
+Ports come from **command-line flags**, not from the config file (the config's
+`admin.port` is only reported in status output). The shipped config listens in
+**plain HTTP**: TLS is off because the demo stack has no certificate. Turning
+`tls.enabled: true` on without valid `cert_file`/`key_file` makes the proxy exit
+on startup.
 
 ```bash
 git clone https://github.com/FortressWAF/FortressWAF.git
 cd FortressWAF
 
-# Edit config with your upstream
-cp deploy/config.yaml config.yaml
+# Build the single binary
+go build -o fortresswaf ./cmd/proxy
 
-# Run
-go run ./cmd/proxy -config config.yaml
+# Run it: proxy on 8080, admin API on 8443
+./fortresswaf -config deploy/config.yaml -proxy-port 8080 -admin-port 8443
+```
 
-# Or use Docker
+The database is optional: the proxy only connects when `db.driver` and `db.dsn`
+are both set, and a failed ping is a warning, not a fatal error. To run the full
+stack (proxy + Postgres + ML sidecar + dashboard) instead:
+
+```bash
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-Minimal config:
+> Verified in this sandbox: `go build`, `go vet`, `go test ./...`, and a live
+> smoke test of the binary. **The Docker stack was not** — this sandbox has
+> podman without a compose plugin, so the compose file was validated by
+> inspection and its healthchecks were checked against the binary, not by
+> `compose up`. Run it once on the presentation machine before the demo.
+
+Minimal config (what `deploy/config.yaml` actually contains, abridged):
 
 ```yaml
-tls:
-  enabled: true
-  cert_file: cert.pem
-  key_file: key.pem
-  http2_enabled: true
-
 admin:
-  port: 8444
-  api_keys: ["sk-admin"]
+  enabled: true
+  api_keys: [fortress-demo-admin]   # any value here logs in as admin
 
 sites:
-  - name: myapp
-    domains: ["app.example.com"]
-    upstream: "http://127.0.0.1:3000"
-    port: 443
+  - name: default
+    domains: [localhost]
+    upstream: http://127.0.0.1:3000   # your backend
     waf_enabled: true
+
+sqli:    { enabled: true }
+xss:     { enabled: true }
+rce:     { enabled: true }
+# ...one entry per inspector; see deploy/config.yaml for the full list
 ```
+
+---
+
+## Demo scenario
+
+A scripted walkthrough a reviewer can follow live. The protected site's upstream
+in `deploy/config.yaml` points at the dashboard container, so benign requests
+return a real page while attacks are blocked at the WAF.
+
+```bash
+# A normal browser request must pass through to the backend.
+curl -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36" \
+     http://localhost:8080/
+
+# 1. SQL injection -> 403 SQLI016
+curl -H "User-Agent: Mozilla/5.0 ..." "http://localhost:8080/search?q=1'%20OR%201=1--"
+
+# 2. Cross-site scripting -> 403 XSS001
+curl -H "User-Agent: Mozilla/5.0 ..." "http://localhost:8080/search?q=<script>alert(1)</script>"
+
+# 3. Command injection -> 403 RCE001
+curl -H "User-Agent: Mozilla/5.0 ..." "http://localhost:8080/cmd?c=;id"
+
+# 4. Read the audit log (hash-chained, tamper-evident)
+TOKEN=$(curl -s -X POST http://localhost:8443/api/v1/auth/login \
+        -H "Content-Type: application/json" \
+        -d '{"email":"a@b.com","password":"fortress-demo-admin"}' | sed 's/.*"token":"\([^"]*\)".*/\1/')
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8443/api/v1/audit?limit=5"
+
+# 5. Ask the compliance module what it can actually verify
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8443/api/v1/compliance/pci-dss/assessment
+```
+
+Two things worth pointing out to an audience:
+
+* **Use a browser User-Agent.** `curl` is on the bot signature list, so a
+  default curl request is blocked as `BOT004` before any payload inspection —
+  which looks like a bug during a demo if you do not explain it.
+* **False positives were tested for, not just attacks.** Each detection module
+  has a false-positive test (`TestFalsePositive_*` in `tests/unit/`) that
+  replays benign input — ordinary English containing SQL keywords, browser
+  User-Agents, benign paths — and fails if any of it is blocked.
 
 ---
 
 ## Architecture
 
-Full architecture document: [`docs/architecture.md`](docs/architecture.md)
-
 ```mermaid
 flowchart LR
-    C[Client] --> T[TLS<br/>HTTP/2 · mTLS]
+    C[Client] --> T[Listener]
     T --> P[Parse]
-    P --> A[Auth<br/>JWT · OAuth · CAPTCHA]
-    A --> PL[Protocol<br/>GraphQL · gRPC · SOAP · WS]
-    PL --> D[Detection<br/>18 inspectors]
-    D --> S[Scoring]
+    P --> D[Detection<br/>built-in inspectors]
+    D --> S[Decision]
     S --> F[Forwarder]
     F --> O[Origin]
 ```
 
 ```
-cmd/proxy/           —  WAF server entry point
+cmd/proxy/           WAF server entry point (flags, admin router, wiring)
 internal/
-  engine/            —  Detection pipeline (18 inspector modules)
-  api/               —  Management REST API
-  config/            —  YAML config with live reload
-  reputation/        —  IP reputation and threat feeds
-  ratelimit/         —  Rate limiting algorithms
-  session/           —  Session tracking
-  siem/              —  SIEM event export
-deploy/              —  Docker, Ansible, Terraform, Helm, monitoring
-docs/                —  Documentation
-dashboard/           —  Web dashboard (Next.js)
-ml-engine/           —  ML sidecar (Python/FastAPI)
+  engine/            Detection pipeline (all inspectors live here)
+  config/            YAML config with live reload
+  compliance/        Control verification against live runtime state
+  siem/              SIEM event export
+  ml/                Client for the Python ML sidecar
+dashboard/           Web dashboard (Next.js)
+ml-engine/           ML sidecar (Python/FastAPI) — see status below
+deploy/              docker-compose, config, monitoring
+docs/                Design documentation (see caveat in Known Limitations)
 ```
 
----
+`internal/` also contains packages that compile but are **not wired into the
+proxy**: `api`, `billing`, `tenant`, `geo`, `ratelimit`, `reputation`, `session`,
+`rules`. Nothing in `cmd/proxy` imports them. They are left in place rather than
+deleted so earlier documentation stays navigable; do not read them as working
+features.
 
 ---
 
 ## Performance
 
-Measured on a laptop (Intel i5-7200U, 2 cores). Server-grade CPUs typically 2-3x faster.
+Measured on the development laptop (Intel i5-7200U, 2 cores / 4 threads) with
+the shipped inspector set. Reproduce with:
 
-| Setup | Per-core throughput |
-|---|---|
-| Passthrough (no inspectors) | ~80,000 req/s |
-| Single inspector (SQLi/XSS/RCE) | ~5,000,000 inspections/s |
-| Full engine (6+ inspectors) | ~2,500 req/s |
-| RequestContext creation | ~80,000 ctx/s |
+```bash
+go test -bench=. -benchtime=200x -run=^$ ./tests/unit/
+```
 
-Full benchmark: [`benchmark.txt`](benchmark.txt)
+| Benchmark | Result | Per-core rate |
+|---|---|---|
+| Single payload, SQLi | ~320 ns/op | ~3.1M inspections/s |
+| Single payload, XSS | ~257 ns/op | ~3.9M inspections/s |
+| Single payload, RCE | ~224 ns/op | ~4.5M inspections/s |
+| Full engine, benign request | ~181 µs/op | ~5,500 req/s |
+| Full engine, attack request | ~195 µs/op | ~5,100 req/s |
+| RequestContext creation | ~14 µs/op | ~70k ctx/s |
 
-Latency overhead per request: ~400μs average with full engine on laptop hardware.
+Latency overhead per request with the full engine is roughly 0.2 ms on this
+hardware. Server-grade CPUs will be faster; the numbers above are the ones
+actually measured here, not marketing figures.
+
+---
+
+## Known limitations
+
+Stated plainly, because hiding them would be worse than having them:
+
+1. **The ML sidecar is not in the request path.** `internal/ml/client.go` and
+   `ml-engine/api/app.py` now agree on a request/response contract, but the
+   proxy never calls it — detection is entirely rule-based. The bundled model
+   is also untrained: `ml-engine` falls back to heuristic scoring. Treat the
+   ML component as scaffolding, not a working classifier.
+2. **Compliance is verification, not enforcement.** The compliance module
+   checks a subset of controls against live runtime state (is the WAF enabled?
+   are the SQLi/XSS inspectors on? is the audit log actually recording?).
+   PCI-DSS has 10 such automated controls; the remaining 15 per framework need
+   evidence no software can supply and are labelled `manual`. With TLS
+   disabled, as in the shipped config, the TLS-dependent frameworks report 0%.
+3. **No inspector for SSRF, open redirect, or CSRF.** These categories are
+   excluded from the corpus detection-rate test rather than silently asserted.
+4. **Rules are not loaded from disk.** The bundled `rules/` directory is
+   unused; detection comes entirely from the built-in inspectors. A config
+   glob for rule files parses but is not read.
+5. **Dead code is present** (see the architecture note): `internal/api`,
+   `billing`, `tenant`, `geo`, `ratelimit`, `reputation`, `session`, `rules`.
+   The dashboard still calls some endpoints these would have served
+   (`/api/admin/tenants`, `/api/partner/*`, `/api/checkout`, `/api/products`),
+   so those pages show errors.
+6. **Response body inspection is a no-op stub** — registered, does nothing.
+7. **`docs/` is aspirational.** The documentation directory describes the
+   intended product, including billing, multi-tenancy, and an
+   enterprise/community feature split that the code does not implement. Trust
+   this README and `deploy/config.yaml` for what actually works; read `docs/`
+   as design notes.
+8. **The Docker stack was validated by inspection, not execution** (no compose
+   runtime in the sandbox). Healthchecks were verified against the live binary.
+9. **Untrained-model honesty:** detection rates in the feature table are
+   measured against a payload corpus, which is a lab measurement — not proof
+   of performance against a skilled attacker with bypass tooling.
 
 ---
 
@@ -218,17 +297,11 @@ Latency overhead per request: ~400μs average with full engine on laptop hardwar
 | [Compliance](docs/compliance.md) | PCI-DSS, SOC2, GDPR references |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues |
 
----
-
-## Related Projects
-
-| Repository | Description |
-|---|---|
-| [fortressctl](https://github.com/FortressWAF/fortressctl) | CLI tool for managing FortressWAF instances |
-| [fortresshoneypot](https://github.com/FortressWAF/fortresshoneypot) | Low-interaction HTTP/SSH honeypot |
+See limitation 7 above: these describe the intended design and overstate what is
+implemented.
 
 ---
 
 ## License
 
-AGPL-3.0
+AGPL-3.0. See [LICENSE](LICENSE).
