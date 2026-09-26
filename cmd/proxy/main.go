@@ -48,7 +48,12 @@ func init() {
 		if ver == "dev" {
 			ver = "v1.4.0"
 		}
-		c := cyan; g := green; y := yellow; b := bold; n := reset; d := dim
+		c := cyan
+		g := green
+		y := yellow
+		b := bold
+		n := reset
+		d := dim
 
 		s := c + n + `  ╔══════════════════════════════════════════════╗
 ` + c + `  ║        ` + b + y + `FORTRESS WAF` + b + c + `               ║
@@ -1001,12 +1006,12 @@ setTimeout(function(){
 
 func buildEngineConfig(cfg *config.Config, dev bool) engine.EngineConfig {
 	eCfg := engine.EngineConfig{
-		DevMode:             dev,
-		ShadowMode:          cfg.ShadowMode.Enabled,
-		LearningMode:        cfg.LearningMode.Enabled,
+		DevMode:              dev,
+		ShadowMode:           cfg.ShadowMode.Enabled,
+		LearningMode:         cfg.LearningMode.Enabled,
 		PerformanceIsolation: cfg.Performance.Enabled,
-		MaxRegexDuration:    int64(cfg.Performance.MaxRegexMs),
-		MaxWASMDuration:     int64(cfg.Performance.MaxWASMMs),
+		MaxRegexDuration:     int64(cfg.Performance.MaxRegexMs),
+		MaxWASMDuration:      int64(cfg.Performance.MaxWASMMs),
 	}
 
 	if cfg.SQLI.Enabled {
