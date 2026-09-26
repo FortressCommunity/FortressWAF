@@ -164,8 +164,12 @@ func (e *SQLInjectionEngine) inspectValue(value, source string) *Decision {
 		return dec
 	}
 
+	// Pattern matching also runs against the unnormalized input: comment
+	// stripping is what makes "; DROP TABLE x--" legible to the tokenizer, but
+	// it also deletes the "--" that SQLI009 keys on, so a payload can be
+	// normalized straight past every rule.
 	for _, pattern := range e.patterns {
-		if pattern.MatchString(value) {
+		if pattern.MatchString(value) || pattern.MatchString(original) {
 			return &Decision{
 				Action:   ActionBlock,
 				RuleID:   "SQLI016",
@@ -411,10 +415,18 @@ func (e *SQLInjectionEngine) analyzeTokens(tokens []Token, original, source stri
 	operatorCount := 0
 	hasSemicolon := false
 
+	// Token positions of keywords and semicolons. Stacked queries chain
+	// statements ("; SELECT ..."), so a real payload has a keyword right next
+	// to a semicolon. Ordinary text is full of both without them being
+	// adjacent — every browser User-Agent contains "like" and ";" — so
+	// counting keywords alone would block all browser traffic.
+	var keywordPos, semicolonPos []int
+
 	for idx, t := range tokens {
 		switch t.Type {
 		case TokenKeyword:
 			keywordCount++
+			keywordPos = append(keywordPos, idx)
 			upper := strings.ToUpper(t.Value)
 			if upper == "UNION" || upper == "SELECT" || upper == "DROP" ||
 				upper == "EXEC" || upper == "EXECUTE" {
@@ -439,11 +451,12 @@ func (e *SQLInjectionEngine) analyzeTokens(tokens []Token, original, source stri
 		case TokenPunctuation:
 			if t.Value == ";" {
 				hasSemicolon = true
+				semicolonPos = append(semicolonPos, idx)
 			}
 		}
 	}
 
-	if hasSemicolon && keywordCount > 0 {
+	if hasSemicolon && keywordCount > 0 && keywordNextToSemicolon(keywordPos, semicolonPos) {
 		return &Decision{
 			Action:   ActionBlock,
 			RuleID:   "SQLI022",
@@ -466,4 +479,20 @@ func (e *SQLInjectionEngine) analyzeTokens(tokens []Token, original, source stri
 	}
 
 	return nil
+}
+
+// keywordNextToSemicolon reports whether any keyword sits within two tokens of
+// any semicolon, leaving room for a comment or filler token between them. That
+// is the shape of a stacked query ("; DROP TABLE x", "1;DELETE FROM u"), as
+// opposed to prose where the keyword and the semicolon are unrelated
+// ("(X11; Linux x86_64) ... (KHTML, like Gecko)").
+func keywordNextToSemicolon(keywordPos, semicolonPos []int) bool {
+	for _, k := range keywordPos {
+		for _, s := range semicolonPos {
+			if d := k - s; d <= 2 && d >= -2 {
+				return true
+			}
+		}
+	}
+	return false
 }

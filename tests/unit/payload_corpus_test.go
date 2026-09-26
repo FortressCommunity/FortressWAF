@@ -349,3 +349,70 @@ func ruleName(dec *engine.Decision) string {
 	}
 	return dec.RuleID
 }
+
+// TestFalsePositive_SQLi_BenignUserAgents guards the SQLI022 regression: a
+// browser User-Agent contains both a SQL keyword ("like Gecko") and
+// semicolons ("(X11; Linux x86_64)"), which the chaining rule used to count
+// as stacked queries and block every browser request outright.
+func TestFalsePositive_SQLi_BenignUserAgents(t *testing.T) {
+	agents := []string{
+		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+		"Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
+	}
+	e := fullEngine()
+	for _, ua := range agents {
+		req := &http.Request{
+			Method: "GET",
+			URL:    &url.URL{Path: "/"},
+			Header: make(http.Header),
+			Host:   "example.com",
+		}
+		req.Header.Set("User-Agent", ua)
+		dec, err := e.Inspect(engine.NewRequestContext(req))
+		if err != nil {
+			t.Fatalf("inspect %q: %v", ua, err)
+		}
+		if dec != nil && dec.Action == engine.ActionBlock {
+			t.Errorf("FALSE POSITIVE: browser UA %q blocked by %s: %s",
+				ua, dec.RuleID, dec.Evidence)
+		}
+	}
+}
+
+// TestSQLInjection_StackedQueriesStillBlocked checks the chaining rule keeps
+// firing on real stacked-query payloads now that it requires the keyword to
+// sit next to the semicolon.
+func TestSQLInjection_StackedQueriesStillBlocked(t *testing.T) {
+	payloads := []string{
+		"1; DELETE FROM users",
+		"1; INSERT INTO admins VALUES(1,'root')",
+		"1; UPDATE users SET role='admin'",
+		"1; WAITFOR DELAY '0:0:5'",
+		"'; SELECT * FROM users--",
+	}
+	e := fullEngine()
+	for _, p := range payloads {
+		req := &http.Request{
+			Method: "GET",
+			URL:    &url.URL{Path: "/search", RawQuery: "q=" + url.QueryEscape(p)},
+			Header: make(http.Header),
+			Host:   "example.com",
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+		dec, err := e.Inspect(engine.NewRequestContext(req))
+		if err != nil {
+			t.Fatalf("inspect %q: %v", p, err)
+		}
+		if dec == nil || dec.Action != engine.ActionBlock {
+			t.Errorf("stacked query %q was NOT blocked (got %+v)", p, dec)
+			continue
+		}
+		if !strings.HasPrefix(dec.RuleID, "SQLI") {
+			t.Errorf("stacked query %q blocked by unexpected rule %s: %s",
+				p, dec.RuleID, dec.Evidence)
+		}
+	}
+}

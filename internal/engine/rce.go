@@ -66,7 +66,7 @@ func (r *RCEInjection) compilePatterns() {
 	r.deserPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)(?:rO0|aced0005|H4sI|BAMARQ)`),
 		regexp.MustCompile(`(?i)(?:\b(?:ObjectInputStream|readObject|unserialize|unserialize|deserialize|deserialize|pickle|loads)\b)`),
-		regexp.MustCompile(`(?i)(?:ysoserial|gadget|commons-collections|commons-collections4|C3P0|javassist|jython|rome|spring|hibernate)`),
+		regexp.MustCompile(`(?i)(?:\bysoserial\b|\bgadget\b|\bcommons-collections\b|\bcommons-collections4\b|\bC3P0\b|\bjavassist\b|\bjython\b|\brome\b|\bspring\b|\bhibernate\b)`),
 		regexp.MustCompile(`(?i)(?:\xac\xed\x00\x05|#002|#003)`),
 		regexp.MustCompile(`(?i)(?:O:[0-9]+:"[^"]+":[0-9]+:\{)`),
 		regexp.MustCompile(`(?i)(?:a:[0-9]+:\{i:[0-9]+;s:[0-9]+:")`),
