@@ -7,8 +7,8 @@ import './globals.css'
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter' })
 
 export const metadata: Metadata = {
-  title: 'FortressWAF — Enterprise Web Application Firewall',
-  description: 'Enterprise-grade web application firewall management dashboard',
+  title: 'FortressWAF — Admin console',
+  description: 'Management dashboard for the FortressWAF reverse proxy',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

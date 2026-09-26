@@ -46,7 +46,7 @@ export default function LoginPage() {
             <Shield className="w-8 h-8 text-primary-foreground" />
           </div>
           <h1 className="text-3xl font-black text-foreground uppercase tracking-tight">FortressWAF</h1>
-          <p className="text-muted-foreground font-bold mt-1">Enterprise Web Application Firewall</p>
+          <p className="text-muted-foreground font-bold mt-1">Web Application Firewall · admin console</p>
         </div>
 
         <div className="border-2 border-foreground bg-card p-8 shadow-brutal-lg">
@@ -89,11 +89,9 @@ export default function LoginPage() {
 
             {error && <p className="text-destructive text-xs font-bold">{error}</p>}
 
-            <div className="flex items-center justify-end">
-              <button type="button" className="text-sm font-bold text-primary hover:text-primary/80 underline underline-offset-4">
-                Forgot password?
-              </button>
-            </div>
+            <p className="text-xs text-muted-foreground font-medium">
+              Sign in with any key listed under <span className="font-mono">admin.api_keys</span> in the config file.
+            </p>
 
             <Button
               type="submit"
@@ -105,24 +103,6 @@ export default function LoginPage() {
             </Button>
           </form>
 
-          <div className="relative my-6">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t-2 border-foreground" />
-            </div>
-            <div className="relative flex justify-center text-xs">
-              <span className="px-2 bg-card text-muted-foreground font-bold">or continue with</span>
-            </div>
-          </div>
-
-          <Button
-            type="button"
-            variant="outline"
-            disabled={isLoading}
-            className="w-full"
-          >
-            {isLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-            Sign in with SSO
-          </Button>
         </div>
 
         <p className="text-center text-xs font-bold text-muted-foreground mt-6">

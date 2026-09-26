@@ -80,6 +80,7 @@ Detection is measured, not assumed: the whole `ml-engine` training corpus
 | Prometheus metrics (`/metrics` on the admin API, plus a dedicated port) | **stable** |
 | Structured JSON logging (slog) | **stable** |
 | Tamper-evident audit log (hash-chained entries, admin API `/api/v1/audit`) | **stable** |
+| Next.js dashboard (overview, detection modules, audit log, compliance) | **stable** — reads the endpoints above |
 | SIEM export (Elasticsearch, Splunk HEC) | implemented, off by default |
 | Grafana dashboards (`deploy/monitoring/grafana/dashboards/*.json`) | **not verified** — definitions are bundled but were never rendered end to end |
 
@@ -267,9 +268,7 @@ Stated plainly, because hiding them would be worse than having them:
    glob for rule files parses but is not read.
 5. **Dead code is present** (see the architecture note): `internal/api`,
    `billing`, `tenant`, `geo`, `ratelimit`, `reputation`, `session`, `rules`.
-   The dashboard still calls some endpoints these would have served
-   (`/api/admin/tenants`, `/api/partner/*`, `/api/checkout`, `/api/products`),
-   so those pages show errors.
+   None of them are imported by `cmd/proxy`.
 6. **Response body inspection is a no-op stub** — registered, does nothing.
 7. **`docs/` is aspirational.** The documentation directory describes the
    intended product, including billing, multi-tenancy, and an

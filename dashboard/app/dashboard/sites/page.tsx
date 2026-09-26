@@ -1,183 +1,125 @@
 'use client'
 
 import * as React from 'react'
-import { Plus, Download, Trash2, Search, MoreHorizontal } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { Globe, ShieldAlert } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from '@/components/ui/table'
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { useToast } from '@/components/ui/toast'
-import { SiteWizard } from './wizard'
-import { cn, formatDate, formatNumber, getStatusDot } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
+import { api, ApiError } from '@/lib/api'
 import type { Site } from '@/types'
 
-const MOCK_SITES: Site[] = [
-  { id: '1', name: 'Main API', domain: 'api.example.com', originUrl: 'https://api.internal:8080', status: 'online', requestsToday: 1452000, attacksBlocked: 82300, lastSeen: new Date().toISOString(), createdAt: '2024-01-15', techStack: 'Node.js/Express', rulesCount: 45 },
-  { id: '2', name: 'E-commerce', domain: 'shop.example.com', originUrl: 'https://shop.internal:3000', status: 'online', requestsToday: 892000, attacksBlocked: 45200, lastSeen: new Date().toISOString(), createdAt: '2024-01-20', techStack: 'Next.js', rulesCount: 38 },
-  { id: '3', name: 'Admin Panel', domain: 'admin.example.com', originUrl: 'https://admin.internal:3001', status: 'degraded', requestsToday: 234000, attacksBlocked: 18900, lastSeen: new Date(Date.now() - 600000).toISOString(), createdAt: '2024-02-01', techStack: 'React/Vite', rulesCount: 52 },
-  { id: '4', name: 'Legacy App', domain: 'legacy.example.com', originUrl: 'https://legacy.internal:8080', status: 'offline', requestsToday: 0, attacksBlocked: 0, lastSeen: new Date(Date.now() - 86400000).toISOString(), createdAt: '2024-02-10', techStack: 'PHP/Laravel', rulesCount: 28 },
-  { id: '5', name: 'Docs Portal', domain: 'docs.example.com', originUrl: 'https://docs.internal:3000', status: 'online', requestsToday: 345000, attacksBlocked: 12000, lastSeen: new Date().toISOString(), createdAt: '2024-03-01', techStack: 'Docusaurus', rulesCount: 15 },
-]
-
 export default function SitesPage() {
-  const { toast } = useToast()
-  const [search, setSearch] = React.useState('')
-  const [wizardOpen, setWizardOpen] = React.useState(false)
-  const [selectedSites, setSelectedSites] = React.useState<string[]>([])
-  const [sites, setSites] = React.useState(MOCK_SITES)
+  const [sites, setSites] = React.useState<Site[]>([])
+  const [loading, setLoading] = React.useState(true)
+  const [error, setError] = React.useState<string | null>(null)
 
-  const filtered = sites.filter((s) =>
-    s.name.toLowerCase().includes(search.toLowerCase()) ||
-    s.domain.toLowerCase().includes(search.toLowerCase()),
-  )
+  const load = React.useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await api.sites()
+      setSites(res.sites)
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? `${err.message} (HTTP ${err.status})`
+          : err instanceof Error ? err.message : 'Unknown error',
+      )
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
-  function toggleSelect(id: string) {
-    setSelectedSites((prev) =>
-      prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id],
+  React.useEffect(() => {
+    load()
+    const id = setInterval(load, 10000)
+    return () => clearInterval(id)
+  }, [load])
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-black uppercase tracking-tight text-foreground">Sites</h1>
+        <Card className="border-2 border-destructive shadow-brutal-sm">
+          <CardContent className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+            <ShieldAlert className="w-10 h-10 text-destructive" />
+            <p className="text-sm text-muted-foreground font-medium">{error}</p>
+            <Button variant="outline" onClick={load}>Try again</Button>
+          </CardContent>
+        </Card>
+      </div>
     )
-  }
-
-  function handleBulkAction(action: string) {
-    if (selectedSites.length === 0) {
-      toast({ title: 'No sites selected', description: 'Please select sites first', variant: 'destructive' })
-      return
-    }
-    if (action === 'delete') {
-      setSites((prev) => prev.filter((s) => !selectedSites.includes(s.id)))
-      toast({ title: 'Sites deleted', description: `${selectedSites.length} sites removed`, variant: 'success' })
-      setSelectedSites([])
-    } else if (action === 'enable') {
-      toast({ title: 'Sites enabled', description: `${selectedSites.length} sites enabled`, variant: 'success' })
-    } else if (action === 'disable') {
-      toast({ title: 'Sites disabled', description: `${selectedSites.length} sites disabled` })
-    }
   }
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Sites</h1>
-          <p className="text-muted-foreground">Manage your protected web applications</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {selectedSites.length > 0 && (
-            <>
-              <Button variant="outline" size="sm" onClick={() => handleBulkAction('enable')}>Enable</Button>
-              <Button variant="outline" size="sm" onClick={() => handleBulkAction('disable')}>Disable</Button>
-              <Button variant="outline" size="sm" onClick={() => handleBulkAction('export')}>
-                <Download className="w-4 h-4 mr-1" /> Export
-              </Button>
-              <Button variant="destructive" size="sm" onClick={() => handleBulkAction('delete')}>
-                <Trash2 className="w-4 h-4 mr-1" /> Delete
-              </Button>
-            </>
-          )}
-          <Button onClick={() => setWizardOpen(true)}>
-            <Plus className="w-4 h-4 mr-2" /> Add Site
-          </Button>
-        </div>
+      <div>
+        <h1 className="text-2xl font-black uppercase tracking-tight text-foreground">Sites</h1>
+        <p className="text-sm text-muted-foreground font-bold">
+          Protected sites loaded from the running config
+        </p>
       </div>
 
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex items-center gap-4">
-            <div className="relative flex-1 max-w-sm">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input
-                placeholder="Search sites..."
-                className="pl-9"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
-            <Badge variant="secondary">{sites.length} total</Badge>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-10">
-                  <input
-                    type="checkbox"
-                    className="rounded border-input"
-                    checked={selectedSites.length === filtered.length && filtered.length > 0}
-                    onChange={() => {
-                      if (selectedSites.length === filtered.length) setSelectedSites([])
-                      else setSelectedSites(filtered.map((s) => s.id))
-                    }}
-                  />
-                </TableHead>
-                <TableHead>Name</TableHead>
-                <TableHead>Domain</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Requests Today</TableHead>
-                <TableHead className="text-right">Attacks Blocked</TableHead>
-                <TableHead>Last Seen</TableHead>
-                <TableHead className="w-10" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.map((site) => (
-                <TableRow key={site.id}>
-                  <TableCell>
-                    <input
-                      type="checkbox"
-                      className="rounded border-input"
-                      checked={selectedSites.includes(site.id)}
-                      onChange={() => toggleSelect(site.id)}
-                    />
-                  </TableCell>
-                  <TableCell className="font-medium">{site.name}</TableCell>
-                  <TableCell className="font-mono text-xs">{site.domain}</TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      <span className={cn('w-2 h-2 rounded-full', getStatusDot(site.status))} />
-                      <span className="capitalize text-sm">{site.status}</span>
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-right font-mono text-xs">{formatNumber(site.requestsToday)}</TableCell>
-                  <TableCell className="text-right font-mono text-xs text-red-500">{formatNumber(site.attacksBlocked)}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{formatDate(site.lastSeen)}</TableCell>
-                  <TableCell>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-8 w-8">
-                          <MoreHorizontal className="w-4 h-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem>View details</DropdownMenuItem>
-                        <DropdownMenuItem>Edit site</DropdownMenuItem>
-                        <DropdownMenuItem>View rules</DropdownMenuItem>
-                        <DropdownMenuItem>View logs</DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem className="text-red-500">Delete</DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {filtered.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
-                    No sites found
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
-      <SiteWizard open={wizardOpen} onOpenChange={setWizardOpen} />
+      {loading && sites.length === 0 ? (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {Array.from({ length: 2 }).map((_, i) => (
+            <Skeleton key={i} className="h-44 border-2 border-foreground/20" />
+          ))}
+        </div>
+      ) : sites.length === 0 ? (
+        <Card className="border-2 border-dashed border-foreground/40">
+          <CardContent className="flex flex-col items-center justify-center gap-2 py-12 text-center">
+            <Globe className="w-8 h-8 text-muted-foreground" />
+            <p className="text-sm font-bold text-muted-foreground">
+              No sites configured. Add one under <span className="font-mono">sites:</span> in the config file.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {sites.map((site) => (
+            <Card key={site.name} className="border-2 border-foreground shadow-brutal">
+              <CardHeader className="flex flex-row items-start justify-between">
+                <div>
+                  <CardTitle className="font-black uppercase tracking-tight text-foreground">
+                    {site.name}
+                  </CardTitle>
+                  <p className="text-xs text-muted-foreground font-medium font-mono mt-1">
+                    {site.domains.join(', ') || 'no domains'}
+                  </p>
+                </div>
+                <Badge
+                  variant="outline"
+                  className={`border-2 font-black uppercase ${
+                    site.waf_enabled
+                      ? 'border-primary text-primary'
+                      : 'border-foreground/40 text-muted-foreground'
+                  }`}
+                >
+                  {site.waf_enabled ? 'WAF on' : 'WAF off'}
+                </Badge>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div>
+                  <span className="text-xs font-black uppercase text-muted-foreground">Upstream</span>
+                  <p className="text-sm font-mono text-foreground font-medium break-all">
+                    {site.upstream}
+                  </p>
+                </div>
+                <div className="flex gap-2 flex-wrap">
+                  <Badge variant="outline" className="border-2 border-foreground/40 text-muted-foreground font-bold">
+                    TLS {site.tls ? 'on' : 'off'}
+                  </Badge>
+                  <Badge variant="outline" className="border-2 border-foreground/40 text-muted-foreground font-bold">
+                    port {site.port || 80}
+                  </Badge>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

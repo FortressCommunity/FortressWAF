@@ -4,12 +4,10 @@ import * as React from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
-  LayoutDashboard, Globe, Shield, ScrollText, BarChart3,
-  Syringe, Settings, ShieldCheck, Menu, X, Search,
-  Bell, Sun, Moon, ChevronDown, LogOut, User, Key,
+  LayoutDashboard, Globe, Shield, ScrollText, ShieldCheck,
+  Menu, X, Sun, Moon, ChevronDown, LogOut,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
@@ -17,25 +15,17 @@ import {
 import { useTheme } from '@/components/theme-provider'
 import { useToast } from '@/components/ui/toast'
 import { cn } from '@/lib/utils'
-import { WebSocketProvider } from '@/components/ui/websocket-provider'
-import { setToken } from '@/lib/api'
+import { api, setToken } from '@/lib/api'
+import type { User } from '@/types'
 
-interface NavItem {
-  label: string
-  href: string
-  icon: React.ReactNode
-  roles?: string[]
-}
-
-const navItems: NavItem[] = [
+// Only pages backed by a real endpoint. The previous nav linked to logs,
+// patches, settings and admin pages whose routes were never implemented.
+const navItems = [
   { label: 'Overview', href: '/dashboard', icon: <LayoutDashboard className="w-4 h-4" /> },
   { label: 'Sites', href: '/dashboard/sites', icon: <Globe className="w-4 h-4" /> },
-  { label: 'Rules', href: '/dashboard/rules', icon: <Shield className="w-4 h-4" /> },
-  { label: 'Logs', href: '/dashboard/logs', icon: <ScrollText className="w-4 h-4" /> },
-  { label: 'Analytics', href: '/dashboard/analytics', icon: <BarChart3 className="w-4 h-4" /> },
-  { label: 'Patches', href: '/dashboard/patches', icon: <Syringe className="w-4 h-4" /> },
-  { label: 'Settings', href: '/dashboard/settings', icon: <Settings className="w-4 h-4" /> },
-  { label: 'Admin', href: '/dashboard/admin', icon: <ShieldCheck className="w-4 h-4" />, roles: ['admin'] },
+  { label: 'Detection', href: '/dashboard/rules', icon: <Shield className="w-4 h-4" /> },
+  { label: 'Audit', href: '/dashboard/audit', icon: <ScrollText className="w-4 h-4" /> },
+  { label: 'Compliance', href: '/dashboard/compliance', icon: <ShieldCheck className="w-4 h-4" /> },
 ]
 
 function Avatar({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -52,13 +42,15 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const { theme, setTheme } = useTheme()
   const { toast } = useToast()
   const [sidebarOpen, setSidebarOpen] = React.useState(false)
+  const [user, setUser] = React.useState<User | null>(null)
 
-  const userRole = 'admin'
-  const filteredNav = navItems.filter((item) => !item.roles || item.roles.includes(userRole))
+  React.useEffect(() => {
+    api.auth.me().then(setUser).catch(() => setUser(null))
+  }, [])
 
   function handleLogout() {
     setToken(null)
-    toast({ title: 'Logged out', description: 'You have been signed out successfully.' })
+    toast({ title: 'Signed out', description: 'You have been signed out.' })
     router.push('/')
   }
 
@@ -78,7 +70,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
         </div>
 
         <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-          {filteredNav.map((item) => {
+          {navItems.map((item) => {
             const isActive = pathname === item.href || (item.href !== '/dashboard' && pathname.startsWith(item.href))
             return (
               <Link
@@ -102,11 +94,11 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
         <div className="px-3 py-4 border-t-2 border-foreground">
           <div className="flex items-center gap-3 px-3 py-2">
             <Avatar>
-              <AvatarFallback>AD</AvatarFallback>
+              <AvatarFallback>{user?.name?.slice(0, 2).toUpperCase() ?? '—'}</AvatarFallback>
             </Avatar>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-bold text-foreground truncate">Admin User</p>
-              <p className="text-xs text-muted-foreground truncate">admin@fortresswaf.io</p>
+              <p className="text-sm font-bold text-foreground truncate">{user?.name ?? 'Admin'}</p>
+              <p className="text-xs text-muted-foreground truncate font-mono">{user?.email ?? ''}</p>
             </div>
           </div>
         </div>
@@ -122,25 +114,11 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
             {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </Button>
 
-          <div className="hidden sm:flex relative flex-1 max-w-md">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <Input
-              placeholder="Search sites, rules, logs..."
-              className="pl-9 bg-background"
-            />
-          </div>
+          <span className="font-black uppercase text-sm tracking-tight text-foreground sm:hidden">
+            FortressWAF
+          </span>
 
           <div className="flex items-center gap-2 ml-auto">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="relative"
-              onClick={() => toast({ title: 'Notifications', description: 'No new notifications' })}
-            >
-              <Bell className="w-5 h-5" />
-              <span className="absolute top-1 right-1 w-2 h-2 bg-destructive border-2 border-foreground" />
-            </Button>
-
             <Button variant="ghost" size="icon" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
               {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
             </Button>
@@ -149,20 +127,13 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" className="flex items-center gap-2 px-2">
                   <Avatar>
-                    <AvatarFallback>AD</AvatarFallback>
+                    <AvatarFallback>{user?.name?.slice(0, 2).toUpperCase() ?? '—'}</AvatarFallback>
                   </Avatar>
                   <ChevronDown className="w-4 h-4 text-muted-foreground hidden sm:block" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuLabel>My Account</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => router.push('/dashboard/settings')}>
-                  <User className="w-4 h-4 mr-2" /> Profile
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => router.push('/dashboard/settings')}>
-                  <Key className="w-4 h-4 mr-2" /> API Keys
-                </DropdownMenuItem>
+                <DropdownMenuLabel>Signed in as {user?.email ?? 'admin'}</DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={handleLogout} className="text-destructive">
                   <LogOut className="w-4 h-4 mr-2" /> Sign out
@@ -181,9 +152,5 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
 }
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <WebSocketProvider>
-      <DashboardShell>{children}</DashboardShell>
-    </WebSocketProvider>
-  )
+  return <DashboardShell>{children}</DashboardShell>
 }

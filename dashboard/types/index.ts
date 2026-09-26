@@ -1,151 +1,158 @@
-export interface Site {
-  id: string
-  name: string
-  domain: string
-  originUrl: string
-  status: 'online' | 'offline' | 'degraded'
-  requestsToday: number
-  attacksBlocked: number
-  lastSeen: string
-  createdAt: string
-  techStack?: string
-  rulesCount?: number
-}
-
-export interface Rule {
-  id: string
-  name: string
-  description: string
-  severity: 'critical' | 'high' | 'medium' | 'low' | 'info'
-  status: 'enabled' | 'disabled'
-  category: string
-  tags: string[]
-  yaml: string
-  createdAt: string
-  updatedAt: string
-  siteId?: string
-  matchCount?: number
-}
-
-export interface LogEntry {
-  id: string
-  timestamp: string
-  ip: string
-  siteId: string
-  siteName: string
-  ruleId?: string
-  ruleName?: string
-  action: 'blocked' | 'allowed' | 'challenged' | 'logged'
-  severity: 'critical' | 'high' | 'medium' | 'low' | 'info'
-  method: string
-  path: string
-  statusCode: number
-  country: string
-  userAgent: string
-  requestHeaders?: Record<string, string>
-  responseHeaders?: Record<string, string>
-  requestBody?: string
-  responseBody?: string
-}
-
-export interface TrafficPoint {
-  timestamp: string
-  value: number
-  blocked?: number
-  allowed?: number
-}
-
-export interface AttackSummary {
-  totalRequests: number
-  blockedAttacks: number
-  activeThreats: number
-  currentQps: number
-  requestsTrend: number
-  blockedTrend: number
-  threatsTrend: number
-  qpsTrend: number
-}
-
-export interface TopEndpoint {
-  path: string
-  requests: number
-  attacks: number
-  method: string
-}
-
-export interface AttackerIP {
-  ip: string
-  requests: number
-  attacks: number
-  country: string
-  asn: string
-  firstSeen: string
-  lastSeen: string
-}
-
-export interface Alert {
-  id: string
-  type: 'attack' | 'anomaly' | 'system' | 'update'
-  severity: 'critical' | 'high' | 'medium' | 'low' | 'info'
-  message: string
-  timestamp: string
-  siteName?: string
-  read: boolean
-}
-
-export interface GeoData {
-  country: string
-  code: string
-  attacks: number
-  lat: number
-  lng: number
-}
-
-export interface Patch {
-  id: string
-  cveId: string
-  title: string
-  severity: 'critical' | 'high' | 'medium' | 'low' | 'info'
-  status: 'draft' | 'testing' | 'deployed' | 'expired'
-  affectedSites: string[]
-  createdAt: string
-  expiresAt: string
-  description: string
-  coverage: number
-}
-
-export interface NotificationConfig {
-  slack?: { enabled: boolean; webhookUrl: string; channel: string }
-  email?: { enabled: boolean; smtpHost: string; smtpPort: number; recipients: string[] }
-  pagerduty?: { enabled: boolean; apiKey: string; serviceId: string }
-  webhook?: { enabled: boolean; url: string; secret: string }
-}
-
-export interface ApiKey {
-  id: string
-  name: string
-  key: string
-  scopes: string[]
-  createdAt: string
-  expiresAt: string
-  lastUsed: string
-  status: 'active' | 'revoked'
-}
+// Response shapes for the admin API. Every type here mirrors a JSON object
+// the Go server actually emits -- nothing is speculative.
 
 export interface User {
   id: string
-  name: string
   email: string
-  avatar?: string
-  role: 'admin' | 'editor' | 'viewer'
-  mfaEnabled: boolean
+  name: string
+  role: string
 }
 
-export interface DashboardStats {
-  summary: AttackSummary
-  traffic: TrafficPoint[]
-  topEndpoints: TopEndpoint[]
-  attackers: AttackerIP[]
-  alerts: Alert[]
-  geoData: GeoData[]
+export interface LoginResponse {
+  token: string
+  user: User
+}
+
+// GET /api/v1/status
+export interface Status {
+  version: string
+  commit: string
+  build_date: string
+  uptime: string
+  uptime_seconds: number
+  requests_per_sec: number
+  total_requests: number
+  blocked_requests: number
+  allowed_requests: number
+  active_connections: number
+  challenged: number
+  rate_limited: number
+  monitored: number
+}
+
+// GET /api/v1/audit
+export interface AuditEntry {
+  id: string
+  timestamp: string
+  actor_id: string
+  actor_type: string
+  actor_ip: string
+  action: string
+  resource: string
+  resource_id: string
+  result: string
+  metadata: string
+  hash: string
+  prev_hash: string
+}
+
+export interface AuditResponse {
+  total: number
+  entries: AuditEntry[]
+  integrity: {
+    valid: boolean
+    error: string | null
+  }
+}
+
+// GET /api/v1/sites
+export interface Site {
+  name: string
+  domains: string[]
+  upstream: string
+  port: number
+  tls: boolean
+  waf_enabled: boolean
+}
+
+export interface SitesResponse {
+  sites: Site[]
+  count: number
+}
+
+// GET /api/v1/inspectors
+export interface Inspector {
+  name: string
+  enabled: boolean
+  hits: number
+}
+
+export interface InspectorsResponse {
+  inspectors: Inspector[]
+  count: number
+}
+
+// GET /api/v1/rules (rules defined in the config file)
+export interface ConfigRule {
+  id: string
+  name: string
+  description: string
+  enabled: boolean
+  severity: string
+  action: string
+  tags: string[]
+}
+
+export interface RulesResponse {
+  rules: ConfigRule[]
+  count: number
+}
+
+// GET /api/v1/config
+export interface ConfigSummary {
+  sites_count: number
+  rules_count: number
+  ml_enabled: boolean
+  redis_enabled: boolean
+  admin_port: number
+  sites: Array<{
+    name: string
+    domains: string[]
+    upstream: string
+    waf_enabled: boolean
+  }>
+}
+
+// GET /api/v1/compliance/frameworks
+export interface ComplianceFramework {
+  id: string
+  description: string
+  total: number
+  automated: number
+  manual: number
+  controls: number
+  compliant: number
+  compliant_percent: number
+}
+
+export interface ComplianceFrameworksResponse {
+  frameworks: ComplianceFramework[]
+}
+
+// GET /api/v1/compliance/{framework}/assessment
+export interface Evidence {
+  type: string
+  description: string
+}
+
+export interface ComplianceControl {
+  id: string
+  framework: string
+  name: string
+  description: string
+  status: string
+  last_checked: string
+  evidence: Evidence[] | null
+  remediation: string
+}
+
+export interface ComplianceAssessment {
+  framework: string
+  assessed_at: string
+  compliant_count: number
+  manual_count: number
+  total_count: number
+  automated_controls: number
+  compliance_percent: number
+  controls: ComplianceControl[]
 }
