@@ -150,7 +150,10 @@ rce:     { enabled: true }
 
 A scripted walkthrough a reviewer can follow live. The protected site's upstream
 in `deploy/config.yaml` points at the dashboard container, so benign requests
-return a real page while attacks are blocked at the WAF.
+return a real page while attacks are blocked at the WAF. Running the binary on
+its own instead, benign requests answer **502** -- the WAF allowed them through
+and nothing is listening at the configured upstream. That 502 is the benign
+path; a blocked request answers 403 with a JSON body naming the rule.
 
 ```bash
 # A normal browser request must pass through to the backend.
