@@ -192,3 +192,6 @@ id_dsa*
 benchmark.txt
 proxy
 dashboard/package-lock.json
+
+# Build artifacts
+/ctl
