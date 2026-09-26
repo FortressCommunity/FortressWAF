@@ -1,4 +1,5 @@
 version: '3.8'
+
 services:
   fortresswaf:
     image: fortresswaf/fortresswaf:latest
@@ -10,10 +11,14 @@ services:
       - "443:443"
       - "8443:8443"
     depends_on:
-      redis: condition: service_healthy
-      postgres: condition: service_healthy
-      ml-engine: condition: service_started
-      nats: condition: service_started
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      ml-engine:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
     environment:
       - CONFIG_PATH=/etc/fortresswaf/config.yaml
       - REDIS_URL=redis://redis:6379
@@ -24,11 +29,15 @@ services:
       - ./config.yaml:/etc/fortresswaf/config.yaml
       - fortress-data:/var/lib/fortresswaf
       - ./rules:/etc/fortresswaf/rules
+    # /health is served by the admin API on 8443, not the proxy listener.
+    # The distroless image has no shell, so the probe is a static Go binary.
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      test: ["CMD", "/healthcheck", "http://localhost:8443/health"]
       interval: 10s
       timeout: 5s
       retries: 3
+    networks:
+      - fortress-net
 
   ml-engine:
     build:
@@ -41,11 +50,10 @@ services:
       - MODEL_DIR=/app/models
     volumes:
       - ml-models:/app/models
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+    # The image defines its own python-based HEALTHCHECK (no wget in
+    # python:3.14-slim); defining one here would shadow it and break.
+    networks:
+      - fortress-net
 
   dashboard:
     build:
@@ -54,10 +62,13 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      - fortresswaf
+      fortresswaf:
+        condition: service_healthy
     environment:
-      - API_URL=http://fortresswaf:8443/api/v1
       - NODE_ENV=production
+    # NEXT_PUBLIC_API_URL is baked in at build time (see dashboard/Dockerfile).
+    networks:
+      - fortress-net
 
   postgres:
     image: postgres:16-alpine
@@ -72,6 +83,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - fortress-net
 
   redis:
     image: redis:7-alpine
@@ -83,17 +96,24 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - fortress-net
 
   nats:
     image: nats:2.10-alpine
-    command: -js
+    # -m 8222 enables the monitoring port that the /healthz probe needs;
+    # without it the healthcheck below can never succeed.
+    command: -js -m 8222
     ports:
       - "4222:4222"
+      - "8222:8222"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - fortress-net
 
   opensearch:
     image: opensearchproject/opensearch:2.12.0
@@ -105,6 +125,15 @@ services:
       - "9200:9200"
     volumes:
       - opensearch-data:/usr/share/opensearch/data
+    networks:
+      - fortress-net
+
+networks:
+  # Explicitly named (not project-prefixed) so the monitoring stack can attach
+  # to it as an external network and reach the WAF admin API.
+  fortress-net:
+    name: fortress-net
+    driver: bridge
 
 volumes:
   postgres-data:

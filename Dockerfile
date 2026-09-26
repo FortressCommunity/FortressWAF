@@ -1,5 +1,5 @@
 # Stage 1: Builder
-FROM golang:1.26-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
@@ -10,6 +10,7 @@ RUN go mod download
 
 COPY . .
 
+# Static binaries so the distroless runtime image needs no libc.
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w -extldflags '-static'" \
     -o /app/fortresswaf \
@@ -20,23 +21,30 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /app/fortressctl \
     ./cmd/ctl
 
-# Stage 2: Final runtime image (distroless)
+# Tiny probe used by the image and compose healthchecks.
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w -extldflags '-static'" \
+    -o /app/healthcheck \
+    ./cmd/healthcheck
+
+# Stage 2: Final runtime image (distroless, no shell)
 FROM gcr.io/distroless/static-debian12:latest
 
 USER 65534:65534
 
 COPY --from=builder /app/fortresswaf /fortresswaf
 COPY --from=builder /app/fortressctl /fortressctl
+COPY --from=builder /app/healthcheck /healthcheck
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 
 ENV TZ=UTC
 
-WORKDIR /
+# /health, /ready and /live are served by the admin API on port 8443,
+# not by the reverse-proxy listener.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/healthcheck", "http://localhost:8443/health"]
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD wget -qO- http://localhost:8080/health || exit 1
-
-EXPOSE 80 443 8443 8080
+EXPOSE 80 443 8443
 
 ENTRYPOINT ["/fortresswaf"]

@@ -14,7 +14,7 @@ rule_files:
 scrape_configs:
   - job_name: 'fortresswaf-proxy'
     static_configs:
-      - targets: ['fortresswaf:8080']
+      - targets: ['fortresswaf:8443']
     metrics_path: /metrics
     scheme: http
 

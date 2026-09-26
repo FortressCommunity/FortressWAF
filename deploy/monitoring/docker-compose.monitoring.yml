@@ -13,12 +13,14 @@ services:
       - '--web.enable-lifecycle'
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus-rules:/etc/prometheus/rules:ro
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"
     restart: unless-stopped
     networks:
       - monitoring
+      - fortress-net
 
   alertmanager:
     image: prom/alertmanager:v0.27.0
@@ -92,6 +94,9 @@ services:
 networks:
   monitoring:
     driver: bridge
+  fortress-net:
+    external: true
+    name: fortress-net
 
 volumes:
   prometheus-data:
