@@ -41,7 +41,11 @@ func NewAPIProtection(devMode bool) *APIProtection {
 		regexp.MustCompile(`(?i)/graphql`),
 		regexp.MustCompile(`(?i)/grpc`),
 		regexp.MustCompile(`(?i)/.env|/config|/debug|/admin`),
-		regexp.MustCompile(`(?i)/actuator|/health|/info|/metrics`),
+		// /health is intentionally left out: it is the standard uptime
+		// probe that load balancers and the WAF itself use, so blocking it on
+		// the protected site breaks health checks. /actuator, /info and
+		// /metrics still expose internals worth hiding.
+		regexp.MustCompile(`(?i)/actuator|/info|/metrics`),
 		regexp.MustCompile(`(?i)/wp-admin|/administrator|/backup`),
 		regexp.MustCompile(`(?i)/\.git|/\.svn|/\.hg`),
 		regexp.MustCompile(`(?i)/\*|/\.\*`),

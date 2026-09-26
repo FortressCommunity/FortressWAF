@@ -31,7 +31,11 @@ func NewParserHardener(devMode bool) *ParserHardener {
 				`|[\x80-\xBF]`,
 		),
 		normalizationRE: regexp.MustCompile(
-			`(?i)(?:%2f|%5c|%00|%0d|%0a|%20|%09|%23|%3f|%3b)` +
+			// Encoded space (%20), tab, #, ? and ; are normal in URLs and were
+			// blocked here, which broke benign paths such as
+			// /products/sony%20wh-1000xm5. Only control characters and null
+			// bytes remain; dot-segment traversal is handled below.
+			`(?i)(?:%00|%0d|%0a|%08)` +
 				`|(?:\.\./)` +
 				`|(?://+)` +
 				`|(?:/\./)` +

@@ -76,7 +76,10 @@ func (e *SQLInjectionEngine) compilePatterns() {
 	}{
 		{"SQLI001", `(?i)(?:\b(?:union|union\s+all)\s+select\b)`, "UNION SELECT", "critical"},
 		{"SQLI002", `(?i)(?:select\s+.*?\bfrom\b.*?\bwhere\b)`, "SELECT FROM WHERE", "high"},
-		{"SQLI003", `(?i)(?:\b(?:insert|update|delete|drop|truncate|alter|create|replace)\b)`, "DML/DDL", "critical"},
+		// SQLI003: DML/DDL keywords on their own are ordinary English
+		// ("delete my account", "insert coin", "update your profile"), so the
+		// pattern requires the keyword to be followed by SQL structure.
+		{"SQLI003", `(?i)(?:\binsert\s+into\b|\bupdate\s+\w+\s+set\b|\bdelete\s+from\b|\b(?:drop|truncate)\s+(?:table|database|schema|index|view)\b|\balter\s+(?:table|database|schema)\b|\bcreate\s+(?:table|database|schema|index|view|user)\b|\breplace\s+into\b)`, "DML/DDL with SQL context", "critical"},
 		{"SQLI004", `(?i)(?:\b(?:exec|execute|exec_sp|xp_cmdshell|sp_executesql)\b)`, "Procedure Execution", "critical"},
 		{"SQLI005", `(?i)(?:'.*\b(?:or|and)\b.*['\"])`, "SQL tautology", "high"},
 		{"SQLI006", `(?i)(?:'.*\s*=\s*'.*--|'.*=\s*'.*#)`, "SQL comment injection", "high"},
@@ -175,6 +178,52 @@ func (e *SQLInjectionEngine) inspectValue(value, source string) *Decision {
 	}
 
 	return nil
+}
+
+// sqlKeywordInContext reports whether the keyword at tokens[i] is followed by
+// SQL structure, which is what distinguishes "drop table users" from
+// "drop-off location". Lookahead is bounded and skips nothing but comments,
+// since the tokenizer already dropped whitespace.
+func sqlKeywordInContext(tokens []Token, i int) bool {
+	// next returns the value of the j-th token after i that is not a comment.
+	next := func(offset int) (string, bool) {
+		for j := i + 1; j < len(tokens) && offset > 0; j++ {
+			if tokens[j].Type == TokenComment {
+				continue
+			}
+			offset--
+			return strings.ToUpper(tokens[j].Value), true
+		}
+		return "", false
+	}
+
+	switch strings.ToUpper(tokens[i].Value) {
+	case "SELECT":
+		// SELECT ... FROM, or SELECT * which is already caught by SQLI001/002.
+		for j := i + 1; j < len(tokens) && j <= i+10; j++ {
+			if tokens[j].Type == TokenComment {
+				continue
+			}
+			if tokens[j].Type == TokenKeyword && strings.ToUpper(tokens[j].Value) == "FROM" {
+				return true
+			}
+		}
+		return false
+	case "UNION":
+		v, ok := next(1)
+		return ok && (v == "SELECT" || v == "ALL")
+	case "DROP", "TRUNCATE", "ALTER", "CREATE":
+		v, ok := next(1)
+		if !ok {
+			return false
+		}
+		return v == "TABLE" || v == "DATABASE" || v == "SCHEMA" || v == "INDEX" || v == "VIEW" || v == "USER"
+	case "EXEC", "EXECUTE":
+		// EXEC followed by an identifier or a call, e.g. exec(@cmd).
+		v, ok := next(1)
+		return ok && (v == "(" || v != ";")
+	}
+	return true
 }
 
 func (e *SQLInjectionEngine) detectEncodingBypass(value, source string) *Decision {
@@ -362,19 +411,25 @@ func (e *SQLInjectionEngine) analyzeTokens(tokens []Token, original, source stri
 	operatorCount := 0
 	hasSemicolon := false
 
-	for _, t := range tokens {
+	for idx, t := range tokens {
 		switch t.Type {
 		case TokenKeyword:
 			keywordCount++
 			upper := strings.ToUpper(t.Value)
-			if upper == "UNION" || upper == "SELECT" || upper == "DROP" || upper == "EXEC" || upper == "EXECUTE" {
+			if upper == "UNION" || upper == "SELECT" || upper == "DROP" ||
+				upper == "EXEC" || upper == "EXECUTE" {
+				// "union square", "drop-off", "select your size" are ordinary
+				// text. Only block when the keyword sits in SQL context.
+				if !sqlKeywordInContext(tokens, idx) {
+					continue
+				}
 				return &Decision{
 					Action:   ActionBlock,
 					RuleID:   "SQLI021",
 					RuleName: "SQL Keyword Injection",
 					Severity: "critical",
 					Score:    90,
-					Evidence: fmt.Sprintf("dangerous SQL keyword %q in %s", t.Value, source),
+					Evidence: fmt.Sprintf("dangerous SQL keyword %q in SQL context in %s", t.Value, source),
 				}
 			}
 		case TokenString:

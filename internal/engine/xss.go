@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -17,6 +18,10 @@ type XSSEngine struct {
 	svgPatterns   []*regexp.Regexp
 	cssInjection  []*regexp.Regexp
 	encodedXSS    *regexp.Regexp
+	jsSinks       []*regexp.Regexp
+	entityNumRE   *regexp.Regexp
+	octalEscapeRE *regexp.Regexp
+	hexEscapeRE   *regexp.Regexp
 	reflectedXSS  *regexp.Regexp
 	customCSP     string
 }
@@ -54,6 +59,8 @@ func (e *XSSEngine) compilePatterns() {
 	e.eventHandlers = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)(?:onabort|onautocomplete|onautocompleteerror|onblur|oncancel|oncanplay|oncanplaythrough|onchange|onclick|onclose|oncontextmenu|oncuechange|ondblclick|ondrag|ondragend|ondragenter|ondragleave|ondragover|ondragstart|ondrop|ondurationchange|onemptied|onended|onerror|onfocus|onfocusin|onfocusout|ongotpointercapture|oninput|oninvalid|onkeydown|onkeypress|onkeyup|onload|onloadeddata|onloadedmetadata|onloadstart|onlostpointercapture|onmousedown|onmousemove|onmouseout|onmouseover|onmouseup|onmousewheel|onpause|onplay|onplaying|onpointercancel|onpointerdown|onpointerenter|onpointerleave|onpointermove|onpointerout|onpointerover|onpointerup|onprogress|onratechange|onreset|onresize|onscroll|onseeked|onseeking|onselect|onselectionchange|onselectstart|onshow|onstalled|onsubmit|onsuspend|ontimeupdate|ontoggle|onvolumechange|onwaiting|onwheel)`),
 		regexp.MustCompile(`(?i)(?:onmouseenter|onmouseleave|onpointerrawupdate|onbeforeinput|onbeforetoggle|oncontentvisibilityautostatechange)`),
+		// SVG/animation events: <marquee onstart=...>, <svg><discard onbegin=...>
+		regexp.MustCompile(`(?i)(?:onstart|onbegin|onend|onfinish|onanimationstart|onanimationend|onanimationiteration|onanimationcancel|ontransitionrun|ontransitionstart|ontransitionend|ontransitioncancel|onscrollend|onbeforematch|onsecuritypolicyviolation)`),
 		regexp.MustCompile(`(?i)(?:onpageshow|onpagehide|onpopstate|onhashchange|onbeforeunload|onunload)`),
 	}
 
@@ -68,7 +75,6 @@ func (e *XSSEngine) compilePatterns() {
 		regexp.MustCompile(`(?i)(?:jaVasCript:[\s\S]*?[<\"'])`),
 		regexp.MustCompile(`(?i)(?:\\x22.*onerror\\x3d)`),
 		regexp.MustCompile(`(?i)(?:\\x3Cscript\\x3E)`),
-		regexp.MustCompile(`(?i)(?:<[^>]*>[\s\S]*?<)`),
 	}
 
 	e.svgPatterns = []*regexp.Regexp{
@@ -89,7 +95,24 @@ func (e *XSSEngine) compilePatterns() {
 		regexp.MustCompile(`(?i)(?:position\s*:\s*fixed)`),
 	}
 
+	// The trailing ';' is optional: evasion payloads often omit it
+	// (&#0000106&#0000097...), and browsers still decode them.
+	e.entityNumRE = regexp.MustCompile(`&#[xX]?[0-9a-fA-F]{2,8};?`)
+	// CSS-style backslash escapes: \0075 is hex 0x75 = 'u'. \xNN is the
+	// JS/Java form.
+	e.octalEscapeRE = regexp.MustCompile(`\\[0-9a-fA-F]{2,4}`)
+	e.hexEscapeRE = regexp.MustCompile(`\\x[0-9a-fA-F]{1,4}`)
+
 	e.encodedXSS = regexp.MustCompile(`(?i)(?:\\x[0-9a-f]{2}|\\u[0-9a-f]{4}|%[0-9a-f]{2}|&#x?[0-9a-f]+;).*(?:script|alert|prompt|confirm|onerror|onload)`)
+
+	// JS sinks: an XSS payload eventually calls something, so a bare sink
+	// call inside a request value is a strong signal on its own. This is what
+	// catches <marquee onstart=alert(1)> or <BR SIZE="&{alert('XSS')}">.
+	e.jsSinks = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(?:alert|prompt|confirm|eval|atob|setTimeout|setInterval|execScript|Function)\s*\(`),
+		regexp.MustCompile(`(?i)(?:document\.(?:cookie|write|writeln|location)|location\.(?:href|assign|replace)|window\.(?:location|open|eval)|self\.(?:location|eval))`),
+		regexp.MustCompile(`(?i)(?:String\.fromCharCode|fromCharCode\s*\(|unescape\s*\(|decodeURIComponent\s*\()`),
+	}
 }
 
 func (e *XSSEngine) setupCSP() {
@@ -149,8 +172,16 @@ func (e *XSSEngine) inspectValue(value, source string) *Decision {
 		return nil
 	}
 
+	// Token-splitting evasion inserts spaces inside a keyword ("jav ascript:",
+	// "one rror=..."). Matching the whitespace-stripped variant closes that.
+	squeezed := strings.Join(strings.Fields(value), "")
+
+	// Fully-encoded payloads (&#106;&#97;... or \006A\0061...) hide every
+	// literal token the rules look for, so decode before matching too.
+	decoded := e.decodeEntities(value)
+
 	for _, pattern := range e.htmlTags {
-		if pattern.MatchString(value) {
+		if pattern.MatchString(value) || pattern.MatchString(decoded) {
 			return &Decision{
 				Action:   ActionBlock,
 				RuleID:   "XSS001",
@@ -163,7 +194,7 @@ func (e *XSSEngine) inspectValue(value, source string) *Decision {
 	}
 
 	for _, pattern := range e.eventHandlers {
-		if pattern.MatchString(value) {
+		if pattern.MatchString(value) || pattern.MatchString(squeezed) || pattern.MatchString(decoded) {
 			return &Decision{
 				Action:   ActionBlock,
 				RuleID:   "XSS002",
@@ -176,7 +207,7 @@ func (e *XSSEngine) inspectValue(value, source string) *Decision {
 	}
 
 	for _, pattern := range e.jsProtocols {
-		if pattern.MatchString(value) {
+		if pattern.MatchString(value) || pattern.MatchString(squeezed) || pattern.MatchString(decoded) {
 			return &Decision{
 				Action:   ActionBlock,
 				RuleID:   "XSS003",
@@ -227,6 +258,19 @@ func (e *XSSEngine) inspectValue(value, source string) *Decision {
 		}
 	}
 
+	for _, pattern := range e.jsSinks {
+		if pattern.MatchString(value) || pattern.MatchString(squeezed) || pattern.MatchString(decoded) {
+			return &Decision{
+				Action:   ActionBlock,
+				RuleID:   "XSS009",
+				RuleName: "JavaScript Sink",
+				Severity: "critical",
+				Score:    85,
+				Evidence: fmt.Sprintf("javascript sink in %s", source),
+			}
+		}
+	}
+
 	if e.encodedXSS.MatchString(value) {
 		return &Decision{
 			Action:   ActionBlock,
@@ -266,4 +310,43 @@ func (e *XSSEngine) ScanResponse(body []byte) *Decision {
 	}
 
 	return nil
+}
+
+// decodeEntities resolves numeric HTML entities and backslash octal/hex
+// escapes to their characters. Fully-encoded payloads hide the literal tokens
+// the sink rules search for; decoding them restores the match. Anything that
+// is not a valid escape is left untouched.
+func (e *XSSEngine) decodeEntities(value string) string {
+	decoded := e.entityNumRE.ReplaceAllStringFunc(value, func(m string) string {
+		// The trailing ';' is optional, so strip it only when present.
+		body := m[2:]
+		if strings.HasSuffix(body, ";") {
+			body = body[:len(body)-1]
+		}
+		base := 10
+		if len(body) > 1 && (body[0] == 'x' || body[0] == 'X') {
+			body, base = body[1:], 16
+		}
+		code, err := strconv.ParseInt(body, base, 32)
+		if err != nil || code <= 0 || code > 0x10FFFF {
+			return m
+		}
+		return string(rune(code))
+	})
+
+	for _, re := range []*regexp.Regexp{e.octalEscapeRE, e.hexEscapeRE} {
+		decoded = re.ReplaceAllStringFunc(decoded, func(m string) string {
+			body := m[1:]
+			if strings.HasPrefix(body, "x") || strings.HasPrefix(body, "X") {
+				body = body[1:]
+			}
+			code, err := strconv.ParseInt(body, 16, 32)
+			if err != nil || code <= 0 || code > 0x10FFFF {
+				return m
+			}
+			return string(rune(code))
+		})
+	}
+
+	return decoded
 }

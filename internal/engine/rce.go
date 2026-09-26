@@ -28,7 +28,9 @@ func (r *RCEInjection) Name() string { return "rce" }
 
 func (r *RCEInjection) compilePatterns() {
 	r.shellPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)(?:;\s*(?:id|whoami|pwd|ls|cat|nc|bash|sh|cmd|powershell|wget|curl|python|perl|ruby|php)\b)`),
+		// Destructive/privilege commands after a shell metacharacter. Without
+		// rm here, "; rm -rf /" sails through the engine.
+		regexp.MustCompile(`(?i)(?:;\s*(?:id|whoami|pwd|ls|cat|nc|ncat|bash|sh|zsh|cmd|powershell|wget|curl|python|python3|perl|ruby|php|rm|mv|cp|dd|mkfs|chmod|chown|kill|killall|shutdown|reboot|useradd|userdel|passwd|crontab|history)\b)`),
 		regexp.MustCompile(`(?i)(?:\|\s*(?:id|whoami|pwd|ls|cat|nc|bash|sh|cmd|powershell|wget|curl)\b)`),
 		regexp.MustCompile("(?i)(?:`[^`]*?(?:id|whoami|pwd|ls|cat|nc|bash|sh|cmd|powershell|wget|curl)[^`]*?`)"),
 		regexp.MustCompile(`(?i)(?:\$\([^)]*?(?:id|whoami|pwd|ls|cat|nc|bash|sh|cmd|powershell)[^)]*?\))`),
@@ -37,8 +39,10 @@ func (r *RCEInjection) compilePatterns() {
 		regexp.MustCompile(`(?i)(?:\|\||&&)\s*(?:id|whoami|pwd|dir|type|more|find)`),
 		regexp.MustCompile(`(?i)(?:;\s*(?:echo|print|cat|type|dir)\s+[\w/\\:.~-]+)`),
 		regexp.MustCompile(`(?i)(?:\$\(<\([\w\s/\\.-]+\)\))`),
-		regexp.MustCompile(`(?i)(?:<(?:[\w/\\]+\s)*[\w/\\]+)`),
-		regexp.MustCompile(`(?i)(?:>(?:[\w/\\]+\s)*[\w/\\]+)`),
+		// Shell input/output redirection. Bound to a shell metacharacter or a
+		// command name, otherwise "a<b and c>d" or "<header>" trips it.
+		regexp.MustCompile(`(?i)(?:[;|&]\s*[\w.-]*\s*[<>]\s*[\w/\\.-]+)`),
+		regexp.MustCompile(`(?i)(?:\b(?:cat|more|less|head|tail|sort|uniq|wc|tee|dd|read|exec)\s+[<>]\s*[\w/\\.-]+)`),
 	}
 
 	r.sstiPatterns = []*regexp.Regexp{
