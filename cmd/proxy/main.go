@@ -634,6 +634,7 @@ func newAdminRouter(cfgMgr *config.Manager, e *engine.Engine, al *compliance.Aud
 	protected.HandleFunc("/reload", handleReload(cfgMgr)).Methods("POST")
 	protected.HandleFunc("/sites", handleListSites(cfgMgr)).Methods("GET")
 	protected.HandleFunc("/rules", handleListRules(cfgMgr)).Methods("GET")
+	protected.HandleFunc("/inspectors", handleListInspectors(e, al)).Methods("GET")
 
 	// Compliance + audit trail: verified against live runtime state.
 	protected.HandleFunc("/compliance/frameworks", handleComplianceFrameworks(ce)).Methods("GET")
@@ -917,6 +918,80 @@ func handleReload(cfgMgr *config.Manager) http.HandlerFunc {
 			"status": "reloaded",
 			"sites":  len(cfg.Sites),
 			"rules":  len(cfg.Rules),
+		})
+	}
+}
+
+// handleListInspectors reports the detection modules the engine actually
+// registered, together with how many audit entries each one is responsible
+// for. The audit metadata carries the rule id ("SQLI016: ..."), so hits are
+// attributed by rule-id prefix.
+func handleListInspectors(e *engine.Engine, al *compliance.AuditLog) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		entries, err := al.Query(compliance.AuditFilter{})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+				"error":  "audit_query_failed",
+				"detail": err.Error(),
+			})
+			return
+		}
+		// Inspector names and the rule-id prefixes they emit do not share a
+		// common stem ("protocol" issues PROT001, api_protect issues API001),
+		// so attribution goes through an explicit map rather than a string
+		// prefix of the inspector name.
+		// Keys are the names the inspectors report via Name(), which are the
+		// display names, not the config section keys.
+		prefixes := map[string]string{
+			"sqli":                  "SQLI",
+			"xss":                   "XSS",
+			"rce":                   "RCE",
+			"ddos_protection":       "DDoS",
+			"protocol_anomaly":      "PROT",
+			"bot_detector":          "BOT",
+			"api_protection":        "API",
+			"file_upload":           "UPL",
+			"ja3":                   "JA3",
+			"desync":                "DSYNC",
+			"parser_hardener":       "PARSER_",
+			"credential_protection": "CRED",
+		}
+
+		inspectors := e.Inspectors()
+		hits := make(map[string]int, len(inspectors))
+		for _, ent := range entries {
+			ruleID := ent.Metadata
+			if i := strings.Index(ruleID, ":"); i > 0 {
+				ruleID = ruleID[:i]
+			}
+			for _, ins := range inspectors {
+				if ins == nil {
+					continue
+				}
+				if prefix, ok := prefixes[ins.Name()]; ok && strings.HasPrefix(ruleID, prefix) {
+					hits[ins.Name()]++
+					break
+				}
+			}
+		}
+
+		// Inspectors() returns one slot per config section; disabled modules
+		// are nil and are skipped.
+		out := make([]map[string]interface{}, 0, len(inspectors))
+		for _, ins := range inspectors {
+			if ins == nil {
+				continue
+			}
+			out = append(out, map[string]interface{}{
+				"name":    ins.Name(),
+				"enabled": true,
+				"hits":    hits[ins.Name()],
+			})
+		}
+
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"inspectors": out,
+			"count":      len(out),
 		})
 	}
 }
