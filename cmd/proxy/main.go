@@ -645,6 +645,17 @@ func handleAuthLogin(cfgMgr *config.Manager) http.HandlerFunc {
 		}
 
 		cfg := cfgMgr.Get()
+
+		// Nothing to authenticate against: without configured API keys the
+		// login endpoint used to index cfg.Admin.APIKeys[0] and panic.
+		if len(cfg.Admin.APIKeys) == 0 {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error":  "admin credentials not configured",
+				"detail": "set admin.api_keys in the config file",
+			})
+			return
+		}
+
 		valid := false
 		for _, key := range cfg.Admin.APIKeys {
 			if req.Email == key || req.Password == key {
@@ -652,7 +663,7 @@ func handleAuthLogin(cfgMgr *config.Manager) http.HandlerFunc {
 				break
 			}
 		}
-		if !valid && len(cfg.Admin.APIKeys) > 0 {
+		if !valid {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 			return
 		}
