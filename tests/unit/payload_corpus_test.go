@@ -416,3 +416,36 @@ func TestSQLInjection_StackedQueriesStillBlocked(t *testing.T) {
 		}
 	}
 }
+
+// TestSemicolonQueryIsInspected guards a real bypass: Go's url.Query rejects
+// the whole query string when a raw ';' appears in it, which used to leave
+// QueryParams empty and let ";id" or "1;DROP TABLE users" past every
+// inspector. The engine now falls back to a lenient '&' split.
+func TestSemicolonQueryIsInspected(t *testing.T) {
+	payloads := []string{
+		";id",
+		"; whoami",
+		"1; DROP TABLE users",
+		"'; SELECT 1--",
+	}
+	e := fullEngine()
+	for _, p := range payloads {
+		req := &http.Request{
+			Method: "GET",
+			// Deliberately raw, not URL-encoded: the point is that the raw
+			// semicolon must still be inspected.
+			URL:    &url.URL{Path: "/cmd", RawQuery: "c=" + p},
+			Header: make(http.Header),
+			Host:   "example.com",
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64)")
+		dec, err := e.Inspect(engine.NewRequestContext(req))
+		if err != nil {
+			t.Fatalf("inspect %q: %v", p, err)
+		}
+		if dec == nil || dec.Action != engine.ActionBlock {
+			t.Errorf("raw-semicolon query %q was NOT inspected (got %+v) -- "+
+				"url.Query may have rejected the query string again", p, dec)
+		}
+	}
+}

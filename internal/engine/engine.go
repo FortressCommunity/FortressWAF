@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -79,6 +81,40 @@ type ResponseContext struct {
 	Request    *RequestContext
 }
 
+// queryValues parses a raw query string, tolerating characters Go's strict
+// parser rejects. It splits on '&' only, decodes each key and value with
+// QueryUnescape, and skips malformed pairs rather than failing the whole
+// query.
+func queryValues(rawQuery string) url.Values {
+	values := make(url.Values)
+	if rawQuery == "" {
+		return values
+	}
+
+	for _, pair := range strings.Split(rawQuery, "&") {
+		if pair == "" {
+			continue
+		}
+
+		key, value, found := strings.Cut(pair, "=")
+		if !found {
+			value = ""
+		}
+
+		k, err := url.QueryUnescape(key)
+		if err != nil {
+			continue
+		}
+		v, err := url.QueryUnescape(value)
+		if err != nil {
+			continue
+		}
+		values.Add(k, v)
+	}
+
+	return values
+}
+
 func NewRequestContext(r *http.Request) *RequestContext {
 	realIP := r.Header.Get("X-Forwarded-For")
 	if realIP == "" {
@@ -112,7 +148,12 @@ func NewRequestContext(r *http.Request) *RequestContext {
 		ctx.Cookies[c.Name] = c.Value
 	}
 
-	qp := r.URL.Query()
+	// Go's url.Query rejects the entire query string when a raw ';' appears
+	// in it ("invalid semicolon separator"), returning no parameters at all.
+	// That would let any payload containing a bare semicolon -- ";id",
+	// "1;DROP TABLE users" -- sail past every inspector. Fall back to a
+	// lenient split on '&' that treats ';' as ordinary data.
+	qp := queryValues(r.URL.RawQuery)
 	for k, v := range qp {
 		ctx.QueryParams[k] = v
 	}
