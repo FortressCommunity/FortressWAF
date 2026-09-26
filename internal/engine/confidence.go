@@ -13,7 +13,7 @@ type ConfidenceScorer struct {
 }
 
 type ruleConfidence struct {
-	ruleID        string
+	ruleID         string
 	totalDecisions int64
 	confirmedBad   int64
 	falsePositives int64
@@ -64,10 +64,10 @@ func (cs *ConfidenceScorer) ScoreDecision(dec *Decision) {
 		evidenceQuality = math.Min(1.0, float64(evidenceLen)/200.0)
 	}
 
-	confidence := base * 0.4 +
-		score * 0.3 +
-		sw * 0.2 +
-		evidenceQuality * 0.1
+	confidence := base*0.4 +
+		score*0.3 +
+		sw*0.2 +
+		evidenceQuality*0.1
 
 	confidence = math.Max(0.1, math.Min(1.0, confidence))
 
@@ -120,9 +120,9 @@ func (cs *ConfidenceScorer) getOrCreate(ruleID string) *ruleConfidence {
 		return rc
 	}
 	cs.stability[ruleID] = &ruleConfidence{
-		ruleID:        ruleID,
+		ruleID:         ruleID,
 		baseConfidence: 0.85,
-		lastUpdated:   time.Now(),
+		lastUpdated:    time.Now(),
 	}
 	return cs.stability[ruleID]
 }
@@ -132,7 +132,7 @@ func (cs *ConfidenceScorer) cleanupLoop() {
 		cs.mu.Lock()
 		now := time.Now()
 		for id, rc := range cs.stability {
-			if now.After(rc.lastUpdated.Add(24 * time.Hour)) && rc.totalDecisions == 0 {
+			if now.After(rc.lastUpdated.Add(24*time.Hour)) && rc.totalDecisions == 0 {
 				delete(cs.stability, id)
 			}
 		}

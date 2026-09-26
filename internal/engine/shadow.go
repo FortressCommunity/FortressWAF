@@ -17,15 +17,15 @@ type LearningEngine struct {
 }
 
 type pathBaseline struct {
-	path        string
-	totalCount  int64
+	path         string
+	totalCount   int64
 	allowedCount int64
-	meanRate    float64
-	stdDev      float64
-	sumSquares  float64
-	lastSeen    time.Time
-	statusCodes map[int]int64
-	methods     map[string]int64
+	meanRate     float64
+	stdDev       float64
+	sumSquares   float64
+	lastSeen     time.Time
+	statusCodes  map[int]int64
+	methods      map[string]int64
 }
 
 type whitelistEntry struct {

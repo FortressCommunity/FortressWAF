@@ -11,7 +11,6 @@ import (
 	"time"
 )
 
-
 // Action represents the enforcement action to take for a request.
 type Action string
 
@@ -39,37 +38,37 @@ type Decision struct {
 
 // RequestContext holds all request-derived data and inspection state for a single request.
 type RequestContext struct {
-	mu            sync.RWMutex
-	Request       *http.Request
-	Response      *http.Response
-	Site          string
-	RealIP        string
-	UserAgent     string
-	Path          string
-	Method        string
-	Headers       map[string]string
-	Cookies       map[string]string
-	QueryParams   map[string][]string
-	FormParams    map[string][]string
-	Body          []byte
-	ContentType   string
-	SessionID     string
-	UserID        string
-	APIKey        string
-	Country       string
-	ASN           uint
-	BotScore      float64
-	ThreatScore   float64
-	Decisions     []Decision
-	IsBot         bool
-	IsKnownAttack bool
-	StartedAt     time.Time
-	RequestID     string
-	Context       context.Context
-	Host          string
-	TLSVersion    string
+	mu             sync.RWMutex
+	Request        *http.Request
+	Response       *http.Response
+	Site           string
+	RealIP         string
+	UserAgent      string
+	Path           string
+	Method         string
+	Headers        map[string]string
+	Cookies        map[string]string
+	QueryParams    map[string][]string
+	FormParams     map[string][]string
+	Body           []byte
+	ContentType    string
+	SessionID      string
+	UserID         string
+	APIKey         string
+	Country        string
+	ASN            uint
+	BotScore       float64
+	ThreatScore    float64
+	Decisions      []Decision
+	IsBot          bool
+	IsKnownAttack  bool
+	StartedAt      time.Time
+	RequestID      string
+	Context        context.Context
+	Host           string
+	TLSVersion     string
 	TLSCipherSuite string
-	JA3Hash       string
+	JA3Hash        string
 }
 
 // ResponseContext holds response-level information for post-response inspection.
@@ -143,48 +142,48 @@ type Inspector interface {
 }
 
 type Engine struct {
-	mu          sync.RWMutex
-	inspectors  []Inspector
-	bot         Inspector
-	ddos        Inspector
-	sqli        Inspector
-	xss         Inspector
-	apiProtect  Inspector
-	rce         Inspector
-	protocol    Inspector
-	upload      Inspector
-	credential  Inspector
-	jwt         Inspector
-	oauth       Inspector
-	graphql     Inspector
-	mtls        Inspector
-	websocket   Inspector
-	captcha     Inspector
-	soap        Inspector
-	grpc        Inspector
-	respInspect Inspector
-	ja3         Inspector
-	behavioral  Inspector
-	wasm        Inspector
-	desync      Inspector
-	adaptive    Inspector
-	ebpf        Inspector
-	parser      Inspector
-	devMode     bool
-	shadowMode  bool
+	mu           sync.RWMutex
+	inspectors   []Inspector
+	bot          Inspector
+	ddos         Inspector
+	sqli         Inspector
+	xss          Inspector
+	apiProtect   Inspector
+	rce          Inspector
+	protocol     Inspector
+	upload       Inspector
+	credential   Inspector
+	jwt          Inspector
+	oauth        Inspector
+	graphql      Inspector
+	mtls         Inspector
+	websocket    Inspector
+	captcha      Inspector
+	soap         Inspector
+	grpc         Inspector
+	respInspect  Inspector
+	ja3          Inspector
+	behavioral   Inspector
+	wasm         Inspector
+	desync       Inspector
+	adaptive     Inspector
+	ebpf         Inspector
+	parser       Inspector
+	devMode      bool
+	shadowMode   bool
 	learningMode bool
-	perfMgmt    *PerformanceManager
-	learner     *LearningEngine
-	confScorer  *ConfidenceScorer
+	perfMgmt     *PerformanceManager
+	learner      *LearningEngine
+	confScorer   *ConfidenceScorer
 }
 
 // EngineConfig configures which inspectors the Engine should use.
 type EngineConfig struct {
-	DevMode     bool
-	ShadowMode  bool
-	LearningMode bool
-	MaxRegexDuration   int64
-	MaxWASMDuration    int64
+	DevMode              bool
+	ShadowMode           bool
+	LearningMode         bool
+	MaxRegexDuration     int64
+	MaxWASMDuration      int64
 	PerformanceIsolation bool
 
 	Bot         Inspector
@@ -219,31 +218,31 @@ func New(cfg EngineConfig) *Engine {
 		devMode:      cfg.DevMode,
 		shadowMode:   cfg.ShadowMode,
 		learningMode: cfg.LearningMode,
-		bot:         cfg.Bot,
-		ddos:        cfg.DDoS,
-		sqli:        cfg.SQLI,
-		xss:         cfg.XSS,
-		apiProtect:  cfg.APIProtect,
-		rce:         cfg.RCE,
-		protocol:    cfg.Protocol,
-		upload:      cfg.Upload,
-		credential:  cfg.Credential,
-		jwt:         cfg.JWT,
-		oauth:       cfg.OAuth,
-		graphql:     cfg.GraphQL,
-		mtls:        cfg.MTLS,
-		websocket:   cfg.WebSocket,
-		captcha:     cfg.CAPTCHA,
-		soap:        cfg.SOAP,
-		grpc:        cfg.GRPC,
-		respInspect: cfg.RespInspect,
-		ja3:         cfg.JA3,
-		behavioral:  cfg.Behavioral,
-		wasm:        cfg.WASM,
-		desync:      cfg.Desync,
-		adaptive:    cfg.Adaptive,
-		ebpf:        cfg.EBPF,
-		parser:      cfg.Parser,
+		bot:          cfg.Bot,
+		ddos:         cfg.DDoS,
+		sqli:         cfg.SQLI,
+		xss:          cfg.XSS,
+		apiProtect:   cfg.APIProtect,
+		rce:          cfg.RCE,
+		protocol:     cfg.Protocol,
+		upload:       cfg.Upload,
+		credential:   cfg.Credential,
+		jwt:          cfg.JWT,
+		oauth:        cfg.OAuth,
+		graphql:      cfg.GraphQL,
+		mtls:         cfg.MTLS,
+		websocket:    cfg.WebSocket,
+		captcha:      cfg.CAPTCHA,
+		soap:         cfg.SOAP,
+		grpc:         cfg.GRPC,
+		respInspect:  cfg.RespInspect,
+		ja3:          cfg.JA3,
+		behavioral:   cfg.Behavioral,
+		wasm:         cfg.WASM,
+		desync:       cfg.Desync,
+		adaptive:     cfg.Adaptive,
+		ebpf:         cfg.EBPF,
+		parser:       cfg.Parser,
 	}
 
 	if cfg.PerformanceIsolation {

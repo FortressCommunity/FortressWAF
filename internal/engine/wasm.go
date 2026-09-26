@@ -19,11 +19,11 @@ type WASMInspector struct {
 	moduleDir   string
 	maxMemPages int
 
-	runtime      wazero.Runtime
-	modules      map[string]api.Module
-	inspectors   map[string]*wasmInspectorDef
-	ctx          context.Context
-	ctxCancel    context.CancelFunc
+	runtime    wazero.Runtime
+	modules    map[string]api.Module
+	inspectors map[string]*wasmInspectorDef
+	ctx        context.Context
+	ctxCancel  context.CancelFunc
 }
 
 type wasmInspectorDef struct {

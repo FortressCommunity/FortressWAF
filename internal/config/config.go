@@ -328,17 +328,17 @@ type BehavioralConfig struct {
 }
 
 type WASMConfig struct {
-	Enabled       bool     `yaml:"enabled"`
-	ModuleDir     string   `yaml:"module_dir"`
-	MaxMemoryPages int     `yaml:"max_memory_pages"`
-	Modules       []string `yaml:"modules"`
+	Enabled        bool     `yaml:"enabled"`
+	ModuleDir      string   `yaml:"module_dir"`
+	MaxMemoryPages int      `yaml:"max_memory_pages"`
+	Modules        []string `yaml:"modules"`
 }
 
 type DesyncConfig struct {
-	Enabled      bool  `yaml:"enabled"`
-	MaxBodySize  int64 `yaml:"max_body_size"`
-	StrictCL    bool   `yaml:"strict_cl"`
-	DetectOBSFold bool `yaml:"detect_obs_fold"`
+	Enabled       bool  `yaml:"enabled"`
+	MaxBodySize   int64 `yaml:"max_body_size"`
+	StrictCL      bool  `yaml:"strict_cl"`
+	DetectOBSFold bool  `yaml:"detect_obs_fold"`
 }
 
 type AdaptiveConfig struct {
@@ -350,10 +350,10 @@ type AdaptiveConfig struct {
 }
 
 type EBPFConfig struct {
-	Enabled   bool   `yaml:"enabled"`
-	Interface string `yaml:"interface"`
-	Port      int    `yaml:"port"`
-	SampleRate int   `yaml:"sample_rate"`
+	Enabled    bool   `yaml:"enabled"`
+	Interface  string `yaml:"interface"`
+	Port       int    `yaml:"port"`
+	SampleRate int    `yaml:"sample_rate"`
 }
 
 type ParserHardeningConfig struct {
@@ -369,62 +369,62 @@ type LearningModeConfig struct {
 }
 
 type PerformanceConfig struct {
-	Enabled         bool `yaml:"enabled"`
-	MaxRegexMs      int  `yaml:"max_regex_ms"`
-	MaxWASMMs       int  `yaml:"max_wasm_ms"`
-	MaxMemoryMB     int  `yaml:"max_memory_mb"`
-	MaxConcurrency  int  `yaml:"max_concurrency"`
-	CircuitThreshold int `yaml:"circuit_threshold"`
+	Enabled          bool `yaml:"enabled"`
+	MaxRegexMs       int  `yaml:"max_regex_ms"`
+	MaxWASMMs        int  `yaml:"max_wasm_ms"`
+	MaxMemoryMB      int  `yaml:"max_memory_mb"`
+	MaxConcurrency   int  `yaml:"max_concurrency"`
+	CircuitThreshold int  `yaml:"circuit_threshold"`
 }
 
 type Config struct {
 	mu       sync.RWMutex
 	filePath string
 
-	Sites        []SiteConfig          `yaml:"sites"`
-	Rules        []RuleConfig          `yaml:"rules"`
-	ML           MLConfig              `yaml:"ml"`
-	Redis        RedisConfig           `yaml:"redis"`
-	DB           DBConfig              `yaml:"db"`
-	Logging      LoggingConfig         `yaml:"logging"`
-	TLS          TLSConfig             `yaml:"tls"`
-	Admin        AdminConfig           `yaml:"admin"`
-	JWT          JWTConfig             `yaml:"jwt"`
-	OAuth        OAuthConfig           `yaml:"oauth"`
-	GraphQL      GraphQLConfig         `yaml:"graphql"`
-	MTLS         MTLSConfig            `yaml:"mtls"`
-	WebSocket    WebSocketConfig       `yaml:"websocket"`
-	SIEM         SIEMConfig            `yaml:"siem"`
-	RewriteRules []RewriteRuleConfig   `yaml:"rewrite_rules"`
-	SQLI         SQLIConfig            `yaml:"sqli"`
-	XSS          XSSConfig             `yaml:"xss"`
-	RCE          RCEConfig             `yaml:"rce"`
-	DDoS         DDoSConfig            `yaml:"ddos"`
-	Protocol     ProtocolConfig        `yaml:"protocol"`
-	Bot          BotConfig             `yaml:"bot"`
-	APIProtect   APIProtectConfig      `yaml:"api_protect"`
-	Upload       UploadConfig          `yaml:"upload"`
-	Credential   CredentialConfig      `yaml:"credential"`
-	Geo          GeoConfig             `yaml:"geo"`
-	RateLimit    RateLimitConfig       `yaml:"rate_limit"`
-	Session      SessionConfig         `yaml:"session"`
-	Reputation   ReputationConfig      `yaml:"reputation"`
-	RulesCfg     RulesConfig           `yaml:"rules_cfg"`
-	CAPTCHA      CAPTCHAConfig         `yaml:"captcha"`
-	RespInspect  ResponseInspectConfig `yaml:"response_inspect"`
-	SOAP         SOAPConfig            `yaml:"soap"`
-	GRPC         GRPCConfig            `yaml:"grpc"`
-	Prometheus   PrometheusConfig      `yaml:"prometheus"`
-	JA3          JA3Config             `yaml:"ja3"`
-	Behavioral   BehavioralConfig      `yaml:"behavioral"`
-	WASM         WASMConfig            `yaml:"wasm"`
-	Desync       DesyncConfig          `yaml:"desync"`
-	Adaptive     AdaptiveConfig        `yaml:"adaptive"`
-	EBPF               EBPFConfig               `yaml:"ebpf"`
-	ParserHardening    ParserHardeningConfig    `yaml:"parser_hardening"`
-	ShadowMode         ShadowModeConfig         `yaml:"shadow_mode"`
-	LearningMode       LearningModeConfig       `yaml:"learning_mode"`
-	Performance        PerformanceConfig        `yaml:"performance"`
+	Sites           []SiteConfig          `yaml:"sites"`
+	Rules           []RuleConfig          `yaml:"rules"`
+	ML              MLConfig              `yaml:"ml"`
+	Redis           RedisConfig           `yaml:"redis"`
+	DB              DBConfig              `yaml:"db"`
+	Logging         LoggingConfig         `yaml:"logging"`
+	TLS             TLSConfig             `yaml:"tls"`
+	Admin           AdminConfig           `yaml:"admin"`
+	JWT             JWTConfig             `yaml:"jwt"`
+	OAuth           OAuthConfig           `yaml:"oauth"`
+	GraphQL         GraphQLConfig         `yaml:"graphql"`
+	MTLS            MTLSConfig            `yaml:"mtls"`
+	WebSocket       WebSocketConfig       `yaml:"websocket"`
+	SIEM            SIEMConfig            `yaml:"siem"`
+	RewriteRules    []RewriteRuleConfig   `yaml:"rewrite_rules"`
+	SQLI            SQLIConfig            `yaml:"sqli"`
+	XSS             XSSConfig             `yaml:"xss"`
+	RCE             RCEConfig             `yaml:"rce"`
+	DDoS            DDoSConfig            `yaml:"ddos"`
+	Protocol        ProtocolConfig        `yaml:"protocol"`
+	Bot             BotConfig             `yaml:"bot"`
+	APIProtect      APIProtectConfig      `yaml:"api_protect"`
+	Upload          UploadConfig          `yaml:"upload"`
+	Credential      CredentialConfig      `yaml:"credential"`
+	Geo             GeoConfig             `yaml:"geo"`
+	RateLimit       RateLimitConfig       `yaml:"rate_limit"`
+	Session         SessionConfig         `yaml:"session"`
+	Reputation      ReputationConfig      `yaml:"reputation"`
+	RulesCfg        RulesConfig           `yaml:"rules_cfg"`
+	CAPTCHA         CAPTCHAConfig         `yaml:"captcha"`
+	RespInspect     ResponseInspectConfig `yaml:"response_inspect"`
+	SOAP            SOAPConfig            `yaml:"soap"`
+	GRPC            GRPCConfig            `yaml:"grpc"`
+	Prometheus      PrometheusConfig      `yaml:"prometheus"`
+	JA3             JA3Config             `yaml:"ja3"`
+	Behavioral      BehavioralConfig      `yaml:"behavioral"`
+	WASM            WASMConfig            `yaml:"wasm"`
+	Desync          DesyncConfig          `yaml:"desync"`
+	Adaptive        AdaptiveConfig        `yaml:"adaptive"`
+	EBPF            EBPFConfig            `yaml:"ebpf"`
+	ParserHardening ParserHardeningConfig `yaml:"parser_hardening"`
+	ShadowMode      ShadowModeConfig      `yaml:"shadow_mode"`
+	LearningMode    LearningModeConfig    `yaml:"learning_mode"`
+	Performance     PerformanceConfig     `yaml:"performance"`
 }
 
 type Manager struct {
@@ -570,10 +570,10 @@ func DefaultConfig() *Config {
 			Enabled: true,
 		},
 		Performance: PerformanceConfig{
-			MaxRegexMs:      1000,
-			MaxWASMMs:       5000,
-			MaxMemoryMB:     512,
-			MaxConcurrency:  0,
+			MaxRegexMs:       1000,
+			MaxWASMMs:        5000,
+			MaxMemoryMB:      512,
+			MaxConcurrency:   0,
 			CircuitThreshold: 5,
 		},
 	}

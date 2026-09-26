@@ -157,10 +157,10 @@ func (l *JA3Listener) GetJA3(addr string) (string, bool) {
 
 type ja3Conn struct {
 	net.Conn
-	parent     *JA3Listener
-	ja3Once    sync.Once
-	ja3Hash    string
-	handshake  bool
+	parent    *JA3Listener
+	ja3Once   sync.Once
+	ja3Hash   string
+	handshake bool
 }
 
 func (c *ja3Conn) computeJA3() string {
@@ -284,5 +284,3 @@ func computeJA3Raw(data []byte) string {
 
 	return fmt.Sprintf("%x", md5.Sum([]byte(ja3Str)))
 }
-
-

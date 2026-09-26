@@ -16,13 +16,13 @@ type EBPFTelemetry struct {
 	port       int
 	sampleRate int
 
-	active     bool
+	active      bool
 	packetCount uint64
-	byteCount  uint64
-	synCount   uint64
-	rstCount   uint64
-	stopCh     chan struct{}
-	doneCh     chan struct{}
+	byteCount   uint64
+	synCount    uint64
+	rstCount    uint64
+	stopCh      chan struct{}
+	doneCh      chan struct{}
 }
 
 func NewEBPFTelemetry(devMode bool, iface string, port, sampleRate int) *EBPFTelemetry {

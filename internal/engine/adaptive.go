@@ -13,11 +13,11 @@ import (
 type ChallengeLevel int
 
 const (
-	ChallengeNone      ChallengeLevel = 0
-	ChallengeJS        ChallengeLevel = 1
-	ChallengeCAPTCHA   ChallengeLevel = 2
-	ChallengeTarpit    ChallengeLevel = 3
-	ChallengeBlock     ChallengeLevel = 4
+	ChallengeNone    ChallengeLevel = 0
+	ChallengeJS      ChallengeLevel = 1
+	ChallengeCAPTCHA ChallengeLevel = 2
+	ChallengeTarpit  ChallengeLevel = 3
+	ChallengeBlock   ChallengeLevel = 4
 )
 
 type AdaptiveChallenge struct {

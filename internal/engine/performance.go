@@ -295,10 +295,10 @@ func (pm *PerformanceManager) Stats() map[string]interface{} {
 	for name, cb := range pm.circuitBreakers {
 		cb.mu.Lock()
 		cbStats[name] = map[string]interface{}{
-			"failures":  cb.failures,
-			"trips":     cb.trips,
-			"state":     pm.CircuitState(name),
-			"resets":    cb.resets,
+			"failures": cb.failures,
+			"trips":    cb.trips,
+			"state":    pm.CircuitState(name),
+			"resets":   cb.resets,
 		}
 		cb.mu.Unlock()
 	}

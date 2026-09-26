@@ -9,25 +9,25 @@ import (
 )
 
 type DesyncDetector struct {
-	mu           sync.RWMutex
-	devMode      bool
-	maxBodySize  int64
-	strictCL     bool
+	mu            sync.RWMutex
+	devMode       bool
+	maxBodySize   int64
+	strictCL      bool
 	detectOBSFold bool
-	clTeRE       *regexp.Regexp
-	obsFoldRE    *regexp.Regexp
-	chunkedRE    *regexp.Regexp
+	clTeRE        *regexp.Regexp
+	obsFoldRE     *regexp.Regexp
+	chunkedRE     *regexp.Regexp
 }
 
 func NewDesyncDetector(devMode bool, maxBodySize int64, strictCL, detectOBSFold bool) *DesyncDetector {
 	return &DesyncDetector{
-		devMode:      devMode,
-		maxBodySize:  maxBodySize,
-		strictCL:     strictCL,
+		devMode:       devMode,
+		maxBodySize:   maxBodySize,
+		strictCL:      strictCL,
 		detectOBSFold: detectOBSFold,
-		clTeRE:       regexp.MustCompile(`(?i)^\s*Content-Length\s*:\s*\d+\s*$`),
-		obsFoldRE:    regexp.MustCompile(`(?m)^\s+(?:[a-zA-Z-]+):`),
-		chunkedRE:    regexp.MustCompile(`(?i)Transfer-Encoding\s*:\s*chunked`),
+		clTeRE:        regexp.MustCompile(`(?i)^\s*Content-Length\s*:\s*\d+\s*$`),
+		obsFoldRE:     regexp.MustCompile(`(?m)^\s+(?:[a-zA-Z-]+):`),
+		chunkedRE:     regexp.MustCompile(`(?i)Transfer-Encoding\s*:\s*chunked`),
 	}
 }
 

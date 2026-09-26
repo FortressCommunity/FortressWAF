@@ -10,22 +10,22 @@ import (
 )
 
 type BehavioralEngine struct {
-	mu           sync.RWMutex
-	devMode      bool
-	reputation   bool
-	velocity     bool
-	pathEntropy  bool
-	threshold    float64
-	windowSec    int
-	maxRequests  int
+	mu          sync.RWMutex
+	devMode     bool
+	reputation  bool
+	velocity    bool
+	pathEntropy bool
+	threshold   float64
+	windowSec   int
+	maxRequests int
 
-	ipRequests    map[string]*slidingWindow
-	ipReputation  map[string]int
-	pathCounts    map[string]int
-	badIPs        map[string]bool
-	blockedIPs    map[string]time.Time
-	cleanupTimer  *time.Ticker
-	entropyRE     *regexp.Regexp
+	ipRequests   map[string]*slidingWindow
+	ipReputation map[string]int
+	pathCounts   map[string]int
+	badIPs       map[string]bool
+	blockedIPs   map[string]time.Time
+	cleanupTimer *time.Ticker
+	entropyRE    *regexp.Regexp
 }
 
 type slidingWindow struct {
@@ -49,7 +49,7 @@ func (sw *slidingWindow) add() int {
 	now := time.Now()
 	cutoff := now.Add(-sw.window)
 
-		j := 0
+	j := 0
 	for _, t := range sw.times {
 		if t.After(cutoff) {
 			sw.times[j] = t
@@ -63,19 +63,19 @@ func (sw *slidingWindow) add() int {
 
 func NewBehavioralEngine(devMode, reputation, velocity, pathEntropy bool, threshold float64, windowSec, maxRequests int) *BehavioralEngine {
 	e := &BehavioralEngine{
-		devMode:     devMode,
-		reputation:  reputation,
-		velocity:    velocity,
-		pathEntropy: pathEntropy,
-		threshold:   threshold,
-		windowSec:   windowSec,
-		maxRequests: maxRequests,
-		ipRequests:  make(map[string]*slidingWindow),
+		devMode:      devMode,
+		reputation:   reputation,
+		velocity:     velocity,
+		pathEntropy:  pathEntropy,
+		threshold:    threshold,
+		windowSec:    windowSec,
+		maxRequests:  maxRequests,
+		ipRequests:   make(map[string]*slidingWindow),
 		ipReputation: make(map[string]int),
-		pathCounts:  make(map[string]int),
-		badIPs:      make(map[string]bool),
-		blockedIPs:  make(map[string]time.Time),
-		entropyRE:   regexp.MustCompile(`[0-9a-f]{8,}|[a-z]{20,}|[A-Z]{20,}`),
+		pathCounts:   make(map[string]int),
+		badIPs:       make(map[string]bool),
+		blockedIPs:   make(map[string]time.Time),
+		entropyRE:    regexp.MustCompile(`[0-9a-f]{8,}|[a-z]{20,}|[A-Z]{20,}`),
 	}
 	e.cleanupTimer = time.NewTicker(5 * time.Minute)
 	go e.cleanupLoop()
