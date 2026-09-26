@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/FortressWAF/FortressWAF/internal/compliance"
 	"github.com/FortressWAF/FortressWAF/internal/config"
 	"github.com/FortressWAF/FortressWAF/internal/engine"
 	"github.com/FortressWAF/FortressWAF/internal/siem"
@@ -205,7 +206,13 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	proxyHandler := newWAFHandler(cfgMgr, e, rewriteMgr, siemMgr, *dev)
+	// Hash-chained audit trail for security events. The compliance engine
+	// verifies the PCI/SOC2/HIPAA audit controls against it, and blocked
+	// requests append to it in the WAF handler below.
+	auditLog := compliance.NewAuditLog()
+	compEngine := compliance.NewComplianceEngine(buildComplianceInput(cfg, auditLog))
+
+	proxyHandler := newWAFHandler(cfgMgr, e, rewriteMgr, siemMgr, auditLog, *dev)
 
 	proxySrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", *proxyPort),
@@ -245,7 +252,7 @@ func main() {
 		}
 	}
 
-	adminRouter := newAdminRouter(cfgMgr, e, *adminPort)
+	adminRouter := newAdminRouter(cfgMgr, e, auditLog, compEngine, *adminPort)
 
 	// Add prometheus metrics on separate listener if enabled
 	if cfg.Prometheus.Enabled {
@@ -362,16 +369,18 @@ type wafHandler struct {
 	engine     *engine.Engine
 	rewriteMgr *engine.RewriteManager
 	siemMgr    *siem.Manager
+	auditLog   *compliance.AuditLog
 	dev        bool
 	proxies    map[string]*httputil.ReverseProxy
 }
 
-func newWAFHandler(cfgMgr *config.Manager, e *engine.Engine, rm *engine.RewriteManager, sm *siem.Manager, dev bool) http.Handler {
+func newWAFHandler(cfgMgr *config.Manager, e *engine.Engine, rm *engine.RewriteManager, sm *siem.Manager, al *compliance.AuditLog, dev bool) http.Handler {
 	h := &wafHandler{
 		cfgMgr:     cfgMgr,
 		engine:     e,
 		rewriteMgr: rm,
 		siemMgr:    sm,
+		auditLog:   al,
 		dev:        dev,
 		proxies:    make(map[string]*httputil.ReverseProxy),
 	}
@@ -494,6 +503,16 @@ func (h *wafHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case engine.ActionBlock:
 		blockedRequests.Add(1)
+		if h.auditLog != nil {
+			_ = h.auditLog.Append(compliance.AuditEntry{
+				ActorType: "client",
+				ActorIP:   clientIP(r),
+				Action:    "request_blocked",
+				Resource:  r.Host + r.URL.Path,
+				Result:    "blocked",
+				Metadata:  decision.RuleID + ": " + decision.RuleName,
+			})
+		}
 		slog.Warn("request blocked",
 			"host", r.Host,
 			"path", r.URL.Path,
@@ -589,7 +608,7 @@ func (h *wafHandler) forwardRequest(w http.ResponseWriter, r *http.Request, site
 	proxy.ServeHTTP(w, r)
 }
 
-func newAdminRouter(cfgMgr *config.Manager, e *engine.Engine, adminPort int) http.Handler {
+func newAdminRouter(cfgMgr *config.Manager, e *engine.Engine, al *compliance.AuditLog, ce *compliance.ComplianceEngine, adminPort int) http.Handler {
 	r := mux.NewRouter()
 	r.Use(corsMiddleware)
 
@@ -610,6 +629,11 @@ func newAdminRouter(cfgMgr *config.Manager, e *engine.Engine, adminPort int) htt
 	protected.HandleFunc("/reload", handleReload(cfgMgr)).Methods("POST")
 	protected.HandleFunc("/sites", handleListSites(cfgMgr)).Methods("GET")
 	protected.HandleFunc("/rules", handleListRules(cfgMgr)).Methods("GET")
+
+	// Compliance + audit trail: verified against live runtime state.
+	protected.HandleFunc("/compliance/frameworks", handleComplianceFrameworks(ce)).Methods("GET")
+	protected.HandleFunc("/compliance/{framework}/assessment", handleComplianceAssessment(ce)).Methods("GET")
+	protected.HandleFunc("/audit", handleAuditLog(al)).Methods("GET")
 
 	return r
 }

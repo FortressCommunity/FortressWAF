@@ -30,10 +30,15 @@ type AuditLog struct {
 	immutable bool
 }
 
+// NewAuditLog creates an append-only, hash-chained audit trail.
+//
+// "immutable" here means entries already written cannot be modified or
+// removed; the log itself is meant to be appended to, so it defaults to
+// writable. VerifyIntegrity() detects any later tampering.
 func NewAuditLog() *AuditLog {
 	return &AuditLog{
 		entries:   make([]AuditEntry, 0),
-		immutable: true,
+		immutable: false,
 	}
 }
 
@@ -48,20 +53,19 @@ func (al *AuditLog) Append(entry AuditEntry) error {
 	entry.Timestamp = time.Now()
 	entry.ID = fmt.Sprintf("audit-%d", len(al.entries)+1)
 	entry.PrevHash = al.lastHash
-
-	data := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s|%s",
-		entry.ID, entry.Timestamp.Format(time.RFC3339Nano),
-		entry.ActorID, entry.ActorType, entry.ActorIP,
-		entry.Action, entry.Resource, entry.ResourceID, entry.Result)
-
-	hash := sha256.New()
-	hash.Write([]byte(al.lastHash + data))
-	entry.Hash = hex.EncodeToString(hash.Sum(nil))
+	entry.Hash = computeEntryHash(al.lastHash, entry)
 
 	al.entries = append(al.entries, entry)
 	al.lastHash = entry.Hash
 
 	return nil
+}
+
+// Len returns the number of entries written since startup.
+func (al *AuditLog) Len() int {
+	al.mu.RLock()
+	defer al.mu.RUnlock()
+	return len(al.entries)
 }
 
 func (al *AuditLog) Query(filter AuditFilter) ([]AuditEntry, error) {
@@ -79,7 +83,10 @@ func (al *AuditLog) Query(filter AuditFilter) ([]AuditEntry, error) {
 		if filter.Resource != "" && entry.Resource != filter.Resource {
 			continue
 		}
-		if filter.From.After(entry.Timestamp) || filter.To.Before(entry.Timestamp) {
+		if !filter.From.IsZero() && filter.From.After(entry.Timestamp) {
+			continue
+		}
+		if !filter.To.IsZero() && filter.To.Before(entry.Timestamp) {
 			continue
 		}
 		results = append(results, entry)
@@ -108,8 +115,27 @@ func (al *AuditLog) VerifyIntegrity() (bool, error) {
 		if entry.PrevHash != prevHash {
 			return false, fmt.Errorf("chain broken at entry %d: expected %s, got %s", i, prevHash, entry.PrevHash)
 		}
+		// Recomputing is what makes the log tamper-evident: linking alone
+		// would not notice a modified field inside an existing entry.
+		if recomputed := computeEntryHash(prevHash, entry); recomputed != entry.Hash {
+			return false, fmt.Errorf("entry %d has been modified: stored hash %s no longer matches its content", i, entry.Hash[:12])
+		}
 		prevHash = entry.Hash
 	}
 
 	return true, nil
+}
+
+// computeEntryHash derives the chain hash of an entry from its contents and
+// the previous entry's hash. The same function runs on append and on
+// verification, so any later edit to a field changes the result.
+func computeEntryHash(prevHash string, entry AuditEntry) string {
+	data := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s|%s",
+		entry.ID, entry.Timestamp.Format(time.RFC3339Nano),
+		entry.ActorID, entry.ActorType, entry.ActorIP,
+		entry.Action, entry.Resource, entry.ResourceID, entry.Result)
+
+	hash := sha256.New()
+	hash.Write([]byte(prevHash + data))
+	return hex.EncodeToString(hash.Sum(nil))
 }
