@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  GO_VERSION: '1.25.13'
+  GO_VERSION: '1.25'
   PYTHON_VERSION: '3.12'
   NODE_VERSION: '20'
 
@@ -83,7 +83,7 @@ jobs:
       - name: Install dependencies
         run: |
           cd ml-engine
-          pip install -r requirements.txt -q 2>/dev/null || pip install fastapi uvicorn pydantic scikit-learn torch transformers numpy pandas prometheus-client httpx pytest -q
+          pip install -r requirements.txt -q 2>/dev/null || pip install fastapi uvicorn pydantic scikit-learn torch transformers numpy pandas redis prometheus-client grpcio protobuf httpx pytest -q
 
       - name: Test Python imports
         run: |
