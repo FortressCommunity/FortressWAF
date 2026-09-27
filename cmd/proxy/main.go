@@ -68,6 +68,7 @@ func init() {
 
   ` + b + y + `OPTIONS` + n + `
     -config  string     path to YAML config file ` + d + `(default: "config.yaml")` + n + `
+                             ` + d + `(overridden by the CONFIG_PATH env var)` + n + `
     -dev                enable dev mode (verbose logging, rule debug)
     -admin-port int     admin API server port ` + d + `(default: 8443)` + n + `
     -proxy-port int     reverse proxy listening port ` + d + `(default: 80)` + n + `
@@ -104,6 +105,20 @@ func main() {
 	adminPort := flag.Int("admin-port", 8443, "admin API server port")
 	proxyPort := flag.Int("proxy-port", 80, "reverse proxy listening port")
 	flag.Parse()
+
+	// The docker image passes the config path via CONFIG_PATH. Use it unless
+	// -config was given explicitly on the command line.
+	configExplicit := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "config" {
+			configExplicit = true
+		}
+	})
+	if !configExplicit {
+		if envPath := os.Getenv("CONFIG_PATH"); envPath != "" {
+			*configPath = envPath
+		}
+	}
 
 	level := slog.LevelInfo
 	if *dev {

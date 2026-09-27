@@ -1,4 +1,4 @@
-version: '3.8'
+
 
 # Only services that something actually consumes are listed here:
 #   fortresswaf -> postgres (startup connectivity check)
@@ -26,7 +26,7 @@ services:
         condition: service_healthy
     environment:
       - CONFIG_PATH=/etc/fortresswaf/config.yaml
-      - DATABASE_URL=postgres://fortress:fortress@postgres:5432/fortresswaf
+      - DATABASE_URL=postgres://fortress:fortress@postgres:5432/fortresswaf?sslmode=disable
       - ML_ENGINE_URL=http://ml-engine:8000
     volumes:
       - ./config.yaml:/etc/fortresswaf/config.yaml
