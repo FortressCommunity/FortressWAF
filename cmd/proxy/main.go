@@ -644,6 +644,17 @@ func newAdminRouter(cfgMgr *config.Manager, e *engine.Engine, al *compliance.Aud
 	r := mux.NewRouter()
 	r.Use(corsMiddleware(cfgMgr))
 
+	// 5 wrong attempts per minute per source address, then a 15-minute lock.
+	// The admin key grants full admin access, so grinding it must not be
+	// cheaper than any other credential the WAF protects.
+	limiter := newLoginLimiter(5, 15*time.Minute, time.Minute)
+	ticker := time.NewTicker(5 * time.Minute)
+	go func() {
+		for range ticker.C {
+			limiter.gc()
+		}
+	}()
+
 	// Browsers send an OPTIONS preflight before the real request when it
 	// carries an Authorization header. gorilla/mux runs middleware only for
 	// routes that match, so a preflight against a GET-only route would 404
@@ -657,7 +668,7 @@ func newAdminRouter(cfgMgr *config.Manager, e *engine.Engine, al *compliance.Aud
 	r.HandleFunc("/live", handleLive).Methods("GET")
 
 	api := r.PathPrefix("/api/v1").Subrouter()
-	api.HandleFunc("/auth/login", handleAuthLogin(cfgMgr)).Methods("POST", "OPTIONS")
+	api.HandleFunc("/auth/login", handleAuthLogin(cfgMgr, limiter)).Methods("POST", "OPTIONS")
 
 	protected := r.PathPrefix("/api/v1").Subrouter()
 	protected.Use(adminAuthMiddleware(cfgMgr))
@@ -734,8 +745,19 @@ type authLoginRequest struct {
 	Password string `json:"password"`
 }
 
-func handleAuthLogin(cfgMgr *config.Manager) http.HandlerFunc {
+func handleAuthLogin(cfgMgr *config.Manager, limiter *loginLimiter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Stop credential grinding against the admin console. The lock is per
+		// source address; a locked-out caller gets 429 with a Retry-After.
+		if locked, retryAfter := limiter.isLocked(r); locked {
+			w.Header().Set("Retry-After", fmt.Sprintf("%.0f", retryAfter.Seconds()))
+			writeJSON(w, http.StatusTooManyRequests, map[string]interface{}{
+				"error":  "too_many_attempts",
+				"detail": "too many failed login attempts, try again later",
+			})
+			return
+		}
+
 		var req authLoginRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
@@ -770,9 +792,11 @@ func handleAuthLogin(cfgMgr *config.Manager) http.HandlerFunc {
 			}
 		}
 		if !valid {
+			limiter.recordFailure(r)
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 			return
 		}
+		limiter.recordSuccess(r)
 
 		token := cfg.Admin.APIKeys[0]
 		writeJSON(w, http.StatusOK, map[string]interface{}{

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/FortressWAF/FortressWAF/internal/config"
 )
@@ -55,7 +56,7 @@ func TestHandleAuthLogin_NoAPIKeys_Returns503(t *testing.T) {
 	cfgMgr, cleanup := writeTestConfig(t, nil)
 	defer cleanup()
 
-	rec := postLogin(t, handleAuthLogin(cfgMgr), `{"email":"admin@example.com","password":"x"}`)
+	rec := postLogin(t, handleAuthLogin(cfgMgr, newLoginLimiter(5, time.Minute, time.Minute)), `{"email":"admin@example.com","password":"x"}`)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 (credentials not configured), got %d: %s", rec.Code, rec.Body.String())
@@ -73,7 +74,7 @@ func TestHandleAuthLogin_ValidCredentials_ReturnsToken(t *testing.T) {
 	cfgMgr, cleanup := writeTestConfig(t, []string{"demo-admin-key"})
 	defer cleanup()
 
-	rec := postLogin(t, handleAuthLogin(cfgMgr), `{"email":"admin@example.com","password":"demo-admin-key"}`)
+	rec := postLogin(t, handleAuthLogin(cfgMgr, newLoginLimiter(5, time.Minute, time.Minute)), `{"email":"admin@example.com","password":"demo-admin-key"}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -93,7 +94,7 @@ func TestHandleAuthLogin_InvalidCredentials_Returns401(t *testing.T) {
 	cfgMgr, cleanup := writeTestConfig(t, []string{"demo-admin-key"})
 	defer cleanup()
 
-	rec := postLogin(t, handleAuthLogin(cfgMgr), `{"email":"admin@example.com","password":"wrong"}`)
+	rec := postLogin(t, handleAuthLogin(cfgMgr, newLoginLimiter(5, time.Minute, time.Minute)), `{"email":"admin@example.com","password":"wrong"}`)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
@@ -104,7 +105,7 @@ func TestHandleAuthLogin_MalformedBody_Returns400(t *testing.T) {
 	cfgMgr, cleanup := writeTestConfig(t, []string{"demo-admin-key"})
 	defer cleanup()
 
-	rec := postLogin(t, handleAuthLogin(cfgMgr), `{not json`)
+	rec := postLogin(t, handleAuthLogin(cfgMgr, newLoginLimiter(5, time.Minute, time.Minute)), `{not json`)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
