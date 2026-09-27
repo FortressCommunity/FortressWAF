@@ -1,0 +1,42 @@
+# Caddy terminates TLS and routes each hostname to its service. FortressWAF
+# only starts one proxy listener, so it cannot serve plain HTTP on 80 and TLS
+# on 443 at the same time; Caddy holds both and forwards inward over HTTP.
+#
+# Let's Encrypt validates every host below over port 80. A record proxied by
+# Cloudflare (orange cloud) answers that challenge at Cloudflare instead of
+# here, so issuance fails: keep these records on "DNS only" (grey cloud).
+
+{
+	# Recommended. Without it Let's Encrypt cannot warn you before a
+	# certificate expires. Set your own address and uncomment.
+	# email you@example.com
+}
+
+fort.tkjt3yapera.my.id {
+	reverse_proxy dashboard:3000
+}
+
+# Grafana is served straight from its container, not through the WAF: its
+# query strings trip the SQLi and XSS inspectors and the WAF would block
+# normal dashboard use.
+grafana.tkjt3yapera.my.id {
+	reverse_proxy grafana:3000
+}
+
+# Admin API that the dashboard calls from the browser.
+admin-fort.tkjt3yapera.my.id {
+	reverse_proxy fortresswaf:8443
+}
+
+# Demo traffic goes through the WAF on purpose, so attacks are blocked and
+# land in the audit log the dashboard displays.
+demo.tkjt3yapera.my.id {
+	reverse_proxy fortresswaf:80
+}
+
+# Keeps the exhibition script working (PROXY_URL=http://localhost) now that
+# port 80 belongs to Caddy instead of the WAF. HTTP only: localhost has no
+# public certificate.
+http://localhost, http://127.0.0.1 {
+	reverse_proxy fortresswaf:80
+}

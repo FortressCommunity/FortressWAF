@@ -42,11 +42,16 @@ admin:
   cors_origins:
     - http://localhost:3000
     - http://127.0.0.1:3000
-  # Empty by default: the proxy treats itself as the edge, so a client cannot
-  # spoof the address its traffic is attributed to (per-IP rate limits,
-  # brute-force lockouts and bot scoring all key off it). List the CIDR of any
-  # real reverse proxy in front of FortressWAF to honour its X-Forwarded-For.
-  trusted_proxies: []
+    # The dashboard is served over Caddy at this host; the browser blocks the
+    # admin API calls without it.
+    - https://fort.tkjt3yapera.my.id
+  # Only these peers may set X-Forwarded-For. FortressWAF treats a peer outside
+  # this list as the client, because per-IP rate limits, brute-force lockouts
+  # and bot scoring all key off the address and a spoofed header would bypass
+  # them. Caddy sits in front on the fortress-net bridge; drop this entry and
+  # every client collapses into the single Caddy container address.
+  trusted_proxies:
+    - 172.18.0.0/16
 
 # --- Protected site ---------------------------------------------------------
 sites:
@@ -56,9 +61,21 @@ sites:
   - name: default
     domains:
       - localhost
-    # The demo backend: the dashboard container itself, so benign requests
-    # get a real 200 while attacks are blocked at the WAF.
-    upstream: http://dashboard:3000
+      # Public demo host: Caddy forwards it here on purpose so the WAF
+      # inspects it and the dashboard has live blocked traffic to show.
+      - demo.tkjt3yapera.my.id
+    # The demo backend: github.com/daffainfo/vulnerable-web, a deliberately
+    # vulnerable PHP app (SQLi, LFI, XSS, upload). It lives on demo-net, which
+    # is internal, so a compromised lab cannot reach anything else. Benign
+    # requests get a real page; attacks are blocked at the WAF, and a bypass
+    # would land somewhere harmless.
+    upstream: http://vulnerable-web:80
+    # The lab app's admin panel lives under /administrator, which the
+    # sensitive-path rule (API002) blocks by default. This host exists to
+    # expose those labs, so that one prefix is forwarded uninspected. Keep it
+    # to the minimum: everything here is unprotected, and /metrics counts it.
+    exclude_paths:
+      - /administrator
     waf_enabled: true
 
 # --- Detection engine -------------------------------------------------------

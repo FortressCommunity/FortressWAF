@@ -39,20 +39,20 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
-      <div className="w-full max-w-md px-8">
+    <div className="min-h-screen flex items-center justify-center px-6">
+      <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 border-2 border-foreground bg-primary shadow-brutal mb-4">
-            <Shield className="w-8 h-8 text-primary-foreground" />
+          <div className="inline-flex items-center justify-center w-12 h-12 rounded-control bg-primary mb-4">
+            <Shield className="w-6 h-6 text-primary-foreground" />
           </div>
-          <h1 className="text-3xl font-black text-foreground uppercase tracking-tight">FortressWAF</h1>
-          <p className="text-muted-foreground font-bold mt-1">Web Application Firewall · admin console</p>
+          <h1 className="text-2xl font-semibold text-foreground">FortressWAF</h1>
+          <p className="text-sm text-muted-foreground mt-1">Web Application Firewall · admin console</p>
         </div>
 
-        <div className="border-2 border-foreground bg-card p-8 shadow-brutal-lg">
+        <div className="glass-overlay rounded-panel p-7">
           <form onSubmit={handleLogin} className="space-y-5">
             <div>
-              <label htmlFor="email" className="block text-sm font-bold text-foreground mb-1.5">
+              <label htmlFor="email" className="block text-sm font-medium text-foreground mb-1.5">
                 Email address
               </label>
               <Input
@@ -66,7 +66,7 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label htmlFor="password" className="block text-sm font-bold text-foreground mb-1.5">
+              <label htmlFor="password" className="block text-sm font-medium text-foreground mb-1.5">
                 Password
               </label>
               <div className="relative">
@@ -90,9 +90,9 @@ export default function LoginPage() {
               </div>
             </div>
 
-            {error && <p className="text-destructive text-xs font-bold">{error}</p>}
+            {error && <p className="text-destructive text-sm">{error}</p>}
 
-            <p className="text-xs text-muted-foreground font-medium">
+            <p className="text-xs text-muted-foreground">
               Sign in with any key listed under <span className="font-mono">admin.api_keys</span> in the config file.
             </p>
 
@@ -108,7 +108,7 @@ export default function LoginPage() {
 
         </div>
 
-        <p className="text-center text-xs font-bold text-muted-foreground mt-6">
+        <p className="text-center text-xs text-muted-foreground mt-6">
           &copy; {new Date().getFullYear()} FortressWAF. All rights reserved.
         </p>
       </div>

@@ -170,11 +170,45 @@ rce:     { enabled: true }
 ## Demo scenario
 
 A scripted walkthrough a reviewer can follow live. The protected site's upstream
-in `deploy/config.yaml` points at the dashboard container, so benign requests
-return a real page while attacks are blocked at the WAF. Running the binary on
-its own instead, benign requests answer **502** -- the WAF allowed them through
-and nothing is listening at the configured upstream. That 502 is the benign
-path; a blocked request answers 403 with a JSON body naming the rule.
+in `deploy/config.yaml` points at the intentionally vulnerable demo app built
+from `deploy/demo-app/` (github.com/daffainfo/vulnerable-web), so benign
+requests get a real page while its SQL injection, file inclusion and XSS
+payloads are blocked at the WAF. That container sits on its own `demo-net`
+bridge with `internal: true`: no route off the host, and no path to Postgres,
+the ML sidecar or the admin API. Running the binary on its own instead, benign
+requests answer **502** -- the WAF allowed them through and nothing is
+listening at the configured upstream. That 502 is the benign path; a blocked
+request answers 403 with a JSON body naming the rule.
+
+### Public deployment
+
+`deploy/docker-compose.yml` runs Caddy as the TLS edge and routes each host to
+its container; the WAF's own listeners are bound to loopback. The live instance
+is reachable at:
+
+| Host | What it serves | Credentials |
+| --- | --- | --- |
+| `fort.tkjt3yapera.my.id` | Dashboard (the WAF's own UI) | any email + `fortress-demo-admin` |
+| `admin-fort.tkjt3yapera.my.id` | Admin API the dashboard calls | `Authorization: Bearer fortress-demo-admin` |
+| `demo.tkjt3yapera.my.id` | Vulnerable demo app, behind the WAF | app login: `administrator` / `administrator` |
+| `grafana.tkjt3yapera.my.id` | Grafana, served around the WAF | `admin` / `admin` -- change it via `GRAFANA_PASSWORD` in `deploy/.env` |
+
+```bash
+curl -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36' \
+     https://demo.tkjt3yapera.my.id/                       # 200, the lab app
+curl -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36' \
+     "https://demo.tkjt3yapera.my.id/users/index.php?q=1'%20OR%20'1'='1"   # 403 SQLI016
+```
+
+The same walkthrough is available as a self-checking script: it asserts each
+expected rule (and that benign traffic is *not* blocked) and exits non-zero if
+anything regresses. Run it against the binary on :8080, or override the URLs
+for the compose stack, whose proxy is published on port 80.
+
+```bash
+./demo/exhibition-script.sh                              # binary: :8080 / :8443
+PROXY_URL=http://localhost ./demo/exhibition-script.sh   # compose: :80 / :8443
+```
 
 ```bash
 # A normal browser request must pass through to the backend.

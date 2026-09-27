@@ -195,3 +195,14 @@ benchmark.txt
 /ctl
 /healthcheck
 /proxy
+
+# ml-engine venv (created by local CI check)
+ml-engine/.venv/
+
+# ML model cache (runtime download, not source)
+ml-engine/models/persisted/
+
+# Agent skills metadata (not source of the project)
+.agents/
+skills-lock.json
+PLAN.md

@@ -89,15 +89,16 @@ var (
 	BuildDate = "unknown"
 	startedAt time.Time
 
-	totalRequests   atomic.Int64
-	blockedRequests atomic.Int64
-	allowedRequests atomic.Int64
-	challengedReqs  atomic.Int64
-	rateLimitedReqs atomic.Int64
-	monitoredReqs   atomic.Int64
-	activeConns     atomic.Int64
-	bytesSent       atomic.Int64
-	bytesReceived   atomic.Int64
+	totalRequests    atomic.Int64
+	blockedRequests  atomic.Int64
+	allowedRequests  atomic.Int64
+	excludedRequests atomic.Int64
+	challengedReqs   atomic.Int64
+	rateLimitedReqs  atomic.Int64
+	monitoredReqs    atomic.Int64
+	activeConns      atomic.Int64
+	bytesSent        atomic.Int64
+	bytesReceived    atomic.Int64
 )
 
 func main() {
@@ -392,6 +393,7 @@ func main() {
 		"total_requests", totalRequests.Load(),
 		"blocked", blockedRequests.Load(),
 		"allowed", allowedRequests.Load(),
+		"excluded", excludedRequests.Load(),
 	)
 }
 
@@ -510,6 +512,15 @@ func (h *wafHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !site.WAFEnabled {
+		h.forwardRequest(w, r, site)
+		return
+	}
+
+	// Paths the operator excluded are forwarded without inspection. Counted
+	// separately so an exempt prefix shows up in /metrics instead of looking
+	// like ordinary allowed traffic.
+	if site.ExcludesPath(r.URL.Path) {
+		excludedRequests.Add(1)
 		h.forwardRequest(w, r, site)
 		return
 	}
@@ -929,6 +940,10 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP fortresswaf_requests_blocked Total blocked requests\n")
 	fmt.Fprintf(w, "# TYPE fortresswaf_requests_blocked counter\n")
 	fmt.Fprintf(w, "fortresswaf_requests_blocked %d\n", blockedRequests.Load())
+
+	fmt.Fprintf(w, "# HELP fortresswaf_requests_excluded Requests forwarded by an exclude_paths rule\n")
+	fmt.Fprintf(w, "# TYPE fortresswaf_requests_excluded counter\n")
+	fmt.Fprintf(w, "fortresswaf_requests_excluded %d\n", excludedRequests.Load())
 
 	fmt.Fprintf(w, "# HELP fortresswaf_requests_challenged Total challenged requests\n")
 	fmt.Fprintf(w, "# TYPE fortresswaf_requests_challenged counter\n")

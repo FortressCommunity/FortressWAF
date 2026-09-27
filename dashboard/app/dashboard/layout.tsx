@@ -29,11 +29,17 @@ const navItems = [
 ]
 
 function Avatar({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cn('relative flex h-8 w-8 shrink-0 overflow-hidden border-2 border-foreground', className)}>{children}</div>
+  return (
+    <div className={cn('flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-secondary', className)}>
+      {children}
+    </div>
+  )
 }
 
-function AvatarFallback({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cn('flex h-full w-full items-center justify-center bg-secondary text-secondary-foreground text-xs font-black', className)}>{children}</div>
+function AvatarFallback({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="text-xs font-medium text-secondary-foreground">{children}</span>
+  )
 }
 
 function DashboardShell({ children }: { children: React.ReactNode }) {
@@ -55,21 +61,21 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="flex min-h-screen">
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 z-50 w-64 bg-card border-r-2 border-foreground transform transition-transform duration-200 ease-in-out lg:translate-x-0 lg:static lg:z-auto',
+          'glass-chrome fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-border transition-transform duration-200 ease-out lg:sticky lg:top-0 lg:z-auto lg:h-screen lg:translate-x-0',
           sidebarOpen ? 'translate-x-0' : '-translate-x-full',
         )}
       >
-        <div className="flex items-center gap-3 px-6 h-16 border-b-2 border-foreground">
-          <div className="flex items-center justify-center w-8 h-8 border-2 border-foreground bg-primary shadow-brutal-sm">
+        <div className="flex h-16 shrink-0 items-center gap-2.5 px-5">
+          <div className="flex items-center justify-center w-8 h-8 rounded-control bg-primary">
             <Shield className="w-4 h-4 text-primary-foreground" />
           </div>
-          <span className="font-black text-foreground uppercase tracking-tight">FortressWAF</span>
+          <span className="font-semibold tracking-tight text-foreground">FortressWAF</span>
         </div>
 
-        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+        <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-2 scrollbar-thin">
           {navItems.map((item) => {
             const isActive = pathname === item.href || (item.href !== '/dashboard' && pathname.startsWith(item.href))
             return (
@@ -77,11 +83,12 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
                 key={item.href}
                 href={item.href}
                 onClick={() => setSidebarOpen(false)}
+                aria-current={isActive ? 'page' : undefined}
                 className={cn(
-                  'flex items-center gap-3 px-3 py-2.5 text-sm font-bold uppercase tracking-wide border-2 border-transparent transition-all',
+                  'flex items-center gap-3 rounded-control px-3 py-2 text-sm transition-colors duration-150',
                   isActive
-                    ? 'bg-primary text-primary-foreground border-foreground shadow-brutal-sm'
-                    : 'text-muted-foreground hover:bg-muted hover:border-foreground',
+                    ? 'bg-primary/15 text-primary font-medium'
+                    : 'text-muted-foreground hover:bg-muted hover:text-foreground',
                 )}
               >
                 {item.icon}
@@ -91,13 +98,13 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        <div className="px-3 py-4 border-t-2 border-foreground">
-          <div className="flex items-center gap-3 px-3 py-2">
+        <div className="shrink-0 border-t border-border p-3">
+          <div className="flex items-center gap-3 px-1 py-1">
             <Avatar>
               <AvatarFallback>{user?.name?.slice(0, 2).toUpperCase() ?? '—'}</AvatarFallback>
             </Avatar>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-bold text-foreground truncate">{user?.name ?? 'Admin'}</p>
+              <p className="text-sm font-medium text-foreground truncate">{user?.name ?? 'Admin'}</p>
               <p className="text-xs text-muted-foreground truncate font-mono">{user?.email ?? ''}</p>
             </div>
           </div>
@@ -105,27 +112,32 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       {sidebarOpen && (
-        <div className="fixed inset-0 z-40 bg-foreground/50 lg:hidden" onClick={() => setSidebarOpen(false)} />
+        <div className="fixed inset-0 z-40 bg-background/70 backdrop-blur-sm lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
-      <div className="lg:pl-64">
-        <header className="sticky top-0 z-30 flex items-center gap-4 px-4 h-16 bg-card border-b-2 border-foreground">
-          <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setSidebarOpen(true)}>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="glass-chrome sticky top-0 z-30 flex items-center gap-4 px-4 h-16 border-b border-border">
+          <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Toggle navigation" onClick={() => setSidebarOpen(!sidebarOpen)}>
             {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </Button>
 
-          <span className="font-black uppercase text-sm tracking-tight text-foreground sm:hidden">
+          <span className="font-semibold text-sm tracking-tight text-foreground sm:hidden">
             FortressWAF
           </span>
 
-          <div className="flex items-center gap-2 ml-auto">
-            <Button variant="ghost" size="icon" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
-              {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+          <div className="flex items-center gap-1 ml-auto">
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            >
+              {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </Button>
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="flex items-center gap-2 px-2">
+                <Button variant="ghost" className="flex items-center gap-2 px-1.5">
                   <Avatar>
                     <AvatarFallback>{user?.name?.slice(0, 2).toUpperCase() ?? '—'}</AvatarFallback>
                   </Avatar>
@@ -135,7 +147,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
               <DropdownMenuContent align="end" className="w-56">
                 <DropdownMenuLabel>Signed in as {user?.email ?? 'admin'}</DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={handleLogout} className="text-destructive">
+                <DropdownMenuItem onClick={handleLogout} className="text-destructive focus:text-destructive">
                   <LogOut className="w-4 h-4 mr-2" /> Sign out
                 </DropdownMenuItem>
               </DropdownMenuContent>

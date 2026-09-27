@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint",
+    "lint:fix": "eslint --fix"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.3.4",
@@ -27,7 +28,6 @@
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "react-hook-form": "^7.50.0",
-    "recharts": "^2.12.0",
     "tailwind-merge": "^3.6.0",
     "ws": "^8.16.0",
     "zod": "^3.22.0"
@@ -38,10 +38,11 @@
     "@types/react-dom": "^19.0.0",
     "@types/ws": "^8.5.10",
     "autoprefixer": "^10.4.17",
-    "eslint": "^9.4.0",
-    "eslint-config-next": "16.2.6",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.2.6",
     "postcss": "^8.4.35",
     "tailwindcss": "^4.3.0",
     "typescript": "^5.7.0"
-  }
+  },
+  "type": "module"
 }

@@ -16,9 +16,12 @@ services:
       context: ..
       dockerfile: Dockerfile
     ports:
-      - "80:80"
-      - "443:443"
-      - "8443:8443"
+      # The proxy listener keeps port 80 inside the network; Caddy owns the
+      # public 80/443 and forwards to it. These two are bound to loopback so
+      # the demo script can still reach them, without exposing the origin on
+      # the internet behind Caddy's back.
+      - "127.0.0.1:8080:80"
+      - "127.0.0.1:8443:8443"
     depends_on:
       postgres:
         condition: service_healthy
@@ -38,15 +41,23 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    # Without this the whole public site stays down after a host reboot,
+    # because only the edge services used to come back on their own.
+    restart: unless-stopped
     networks:
       - fortress-net
+      # Reaches the demo target by container name. Kept separate so the
+      # deliberately vulnerable app cannot see postgres, ml-engine or the
+      # admin API on fortress-net.
+      - demo-net
 
   ml-engine:
     build:
       context: ../ml-engine
       dockerfile: Dockerfile
+    restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       - MODEL_DIR=/app/models
     volumes:
@@ -60,14 +71,51 @@ services:
     build:
       context: ../dashboard
       dockerfile: Dockerfile
+      args:
+        # Inlined into the client bundle at build time, so it must be the URL
+        # the browser can reach. Caddy terminates TLS for this host.
+        NEXT_PUBLIC_API_URL: https://admin-fort.tkjt3yapera.my.id/api/v1
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       fortresswaf:
         condition: service_healthy
     environment:
       - NODE_ENV=production
     # NEXT_PUBLIC_API_URL is baked in at build time (see dashboard/Dockerfile).
+    restart: unless-stopped
+    networks:
+      - fortress-net
+
+  # The demo target behind demo.tkjt3yapera.my.id. It is intentionally full of
+  # vulnerabilities (SQLi, LFI, upload, XSS) so the WAF has something real to
+  # block. Built from github.com/daffainfo/vulnerable-web; see demo-app/Dockerfile.
+  vulnerable-web:
+    image: fortresswaf/vulnerable-web:latest
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/80"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - demo-net
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - dashboard
+      - fortresswaf
+    restart: unless-stopped
     networks:
       - fortress-net
 
@@ -84,6 +132,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
     networks:
       - fortress-net
 
@@ -93,8 +142,16 @@ networks:
   fortress-net:
     name: fortress-net
     driver: bridge
+  # `internal: true` gives the demo target no route off the host: even with a
+  # full compromise it cannot call out, and it never joins fortress-net.
+  demo-net:
+    name: demo-net
+    driver: bridge
+    internal: true
 
 volumes:
   postgres-data:
   fortress-data:
   ml-models:
+  caddy-data:
+  caddy-config:

@@ -1,12 +1,12 @@
 'use client'
 
-import * as React from 'react'
 import { Shield, ShieldAlert } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { api, ApiError } from '@/lib/api'
+import { api } from '@/lib/api'
+import { usePolling } from '@/lib/use-polling'
 import type { Inspector, ConfigRule } from '@/types'
 
 // What each inspector actually looks for, so the table reads as more than
@@ -27,45 +27,32 @@ const DESCRIPTIONS: Record<string, string> = {
   credential_protection: 'Credential protection: brute force, stuffing, spray, lockout',
 }
 
+interface RulesData {
+  inspectors: Inspector[]
+  rules: ConfigRule[]
+}
+
 export default function RulesPage() {
-  const [inspectors, setInspectors] = React.useState<Inspector[]>([])
-  const [rules, setRules] = React.useState<ConfigRule[]>([])
-  const [loading, setLoading] = React.useState(true)
-  const [error, setError] = React.useState<string | null>(null)
-
-  const load = React.useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const [insp, cfgRules] = await Promise.all([api.inspectors(), api.rules()])
-      setInspectors(insp?.inspectors ?? [])
-      setRules(cfgRules?.rules ?? [])
-    } catch (err) {
-      setError(
-        err instanceof ApiError
-          ? `${err.message} (HTTP ${err.status})`
-          : err instanceof Error ? err.message : 'Unknown error',
-      )
-    } finally {
-      setLoading(false)
+  const { data, loading, error, reload } = usePolling<RulesData>(async () => {
+    const [insp, cfgRules] = await Promise.all([api.inspectors(), api.rules()])
+    return {
+      inspectors: insp?.inspectors ?? [],
+      rules: cfgRules?.rules ?? [],
     }
-  }, [])
+  }, 5_000)
 
-  React.useEffect(() => {
-    load()
-    const id = setInterval(load, 5000)
-    return () => clearInterval(id)
-  }, [load])
+  const inspectors = data?.inspectors ?? []
+  const rules = data?.rules ?? []
 
   if (error) {
     return (
       <div className="space-y-6">
-        <h1 className="text-2xl font-black uppercase tracking-tight text-foreground">Detection</h1>
-        <Card className="border-2 border-destructive shadow-brutal-sm">
+        <h1 className="text-2xl font-semibold text-foreground">Detection</h1>
+        <Card className="border border-destructive/40">
           <CardContent className="flex flex-col items-center justify-center gap-3 py-12 text-center">
             <ShieldAlert className="w-10 h-10 text-destructive" />
-            <p className="text-sm text-muted-foreground font-medium">{error}</p>
-            <Button variant="outline" onClick={load}>Try again</Button>
+            <p className="text-sm text-muted-foreground">{error}</p>
+            <Button variant="outline" onClick={() => reload()}>Try again</Button>
           </CardContent>
         </Card>
       </div>
@@ -78,8 +65,8 @@ export default function RulesPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-black uppercase tracking-tight text-foreground">Detection</h1>
-        <p className="text-sm text-muted-foreground font-bold">
+        <h1 className="text-2xl font-semibold text-foreground">Detection</h1>
+        <p className="text-sm text-muted-foreground">
           Built-in detection modules registered in the running engine · {totalHits} hits in the audit log
         </p>
       </div>
@@ -87,14 +74,14 @@ export default function RulesPage() {
       {loading && inspectors.length === 0 ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-36 border-2 border-foreground/20" />
+            <Skeleton key={i} className="h-36" />
           ))}
         </div>
       ) : sorted.length === 0 ? (
-        <Card className="border-2 border-dashed border-foreground/40">
+        <Card className="border border-dashed">
           <CardContent className="flex flex-col items-center justify-center gap-2 py-12 text-center">
             <Shield className="w-8 h-8 text-muted-foreground" />
-            <p className="text-sm font-bold text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               No inspectors registered. Enable modules in the config file.
             </p>
           </CardContent>
@@ -102,29 +89,29 @@ export default function RulesPage() {
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {sorted.map((ins) => (
-            <Card key={ins.name} className="border-2 border-foreground shadow-brutal">
+            <Card key={ins.name}>
               <CardHeader className="flex flex-row items-start justify-between">
-                <CardTitle className="font-mono text-sm font-black uppercase tracking-tight text-foreground">
+                <CardTitle className="font-mono text-sm font-semibold text-foreground">
                   {ins.name}
                 </CardTitle>
                 <Badge
                   variant="outline"
-                  className={`border-2 font-black uppercase shrink-0 ${
+                  className={`font-medium shrink-0 ${
                     ins.enabled
                       ? 'border-primary text-primary'
-                      : 'border-foreground/40 text-muted-foreground'
+                      : 'text-muted-foreground'
                   }`}
                 >
                   {ins.enabled ? 'on' : 'off'}
                 </Badge>
               </CardHeader>
               <CardContent>
-                <p className="text-xs text-muted-foreground font-medium min-h-[2.5rem]">
+                <p className="text-xs text-muted-foreground min-h-[2.5rem]">
                   {DESCRIPTIONS[ins.name] || 'Detection module registered in the engine.'}
                 </p>
-                <div className="mt-4 flex items-baseline gap-2 border-t-2 border-foreground/10 pt-3">
-                  <span className="text-2xl font-black text-foreground tabular-nums">{ins.hits}</span>
-                  <span className="text-xs font-bold uppercase text-muted-foreground">
+                <div className="mt-4 flex items-baseline gap-2 border-t border-border pt-3">
+                  <span className="text-2xl font-semibold text-foreground tabular-nums">{ins.hits}</span>
+                  <span className="text-xs text-muted-foreground">
                     {ins.hits === 1 ? 'hit' : 'hits'}
                   </span>
                 </div>
@@ -134,39 +121,39 @@ export default function RulesPage() {
         </div>
       )}
 
-      <Card className="border-2 border-foreground shadow-brutal">
+      <Card>
         <CardHeader>
-          <CardTitle className="text-sm font-black uppercase tracking-tight">
+          <CardTitle className="text-sm font-semibold">
             Rules from the config file
           </CardTitle>
-          <p className="text-xs text-muted-foreground font-medium">
+          <p className="text-xs text-muted-foreground">
             Rules are not loaded from disk in the current build; this section is empty by
             default and reports whatever the config defines.
           </p>
         </CardHeader>
         <CardContent>
           {rules.length === 0 ? (
-            <p className="text-sm font-bold text-muted-foreground py-4">
+            <p className="text-sm text-muted-foreground py-4">
               No custom rules configured. Detection runs entirely on the built-in modules above.
             </p>
           ) : (
             <div className="overflow-x-auto scrollbar-thin">
               <table className="w-full">
                 <thead>
-                  <tr className="border-b-2 border-foreground">
-                    <th className="text-left py-2 font-black uppercase text-xs">ID</th>
-                    <th className="text-left py-2 font-black uppercase text-xs">Name</th>
-                    <th className="text-left py-2 font-black uppercase text-xs">Severity</th>
-                    <th className="text-left py-2 font-black uppercase text-xs">Status</th>
+                  <tr className="border-b border-border">
+                    <th className="py-2 text-left text-xs font-medium text-muted-foreground">ID</th>
+                    <th className="py-2 text-left text-xs font-medium text-muted-foreground">Name</th>
+                    <th className="py-2 text-left text-xs font-medium text-muted-foreground">Severity</th>
+                    <th className="py-2 text-left text-xs font-medium text-muted-foreground">Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rules.map((r) => (
-                    <tr key={r.id} className="border-b border-foreground/30">
-                      <td className="py-2 font-mono text-xs font-bold">{r.id}</td>
-                      <td className="py-2 text-xs font-medium">{r.name}</td>
+                    <tr key={r.id} className="border-b border-border">
+                      <td className="py-2 font-mono text-xs">{r.id}</td>
+                      <td className="py-2 text-xs">{r.name}</td>
                       <td className="py-2 text-xs font-mono">{r.severity}</td>
-                      <td className="py-2 text-xs font-bold">{r.enabled ? 'enabled' : 'disabled'}</td>
+                      <td className="py-2 text-xs">{r.enabled ? 'enabled' : 'disabled'}</td>
                     </tr>
                   ))}
                 </tbody>

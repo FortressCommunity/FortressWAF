@@ -8,8 +8,9 @@ import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ChartContainer } from '@/components/ui/chart'
 import { Skeleton } from '@/components/ui/skeleton'
-import { api, ApiError } from '@/lib/api'
-import { formatNumber, formatDate } from '@/lib/utils'
+import { api } from '@/lib/api'
+import { usePolling } from '@/lib/use-polling'
+import { formatNumber, formatDate, formatDuration } from '@/lib/utils'
 import type { Status, AuditEntry, Inspector } from '@/types'
 
 // One bar in the attacks-over-time chart: blocked requests bucketed by minute.
@@ -72,16 +73,18 @@ function StatCard({
   hint?: string
 }) {
   return (
-    <Card className="border-2 border-foreground shadow-brutal">
+    <Card>
       <CardHeader className="flex flex-row items-center justify-between pb-2">
-        <CardTitle className="text-xs font-black uppercase tracking-wide text-muted-foreground">
+        <CardTitle className="text-xs font-semibold text-muted-foreground">
           {title}
         </CardTitle>
         <div className="text-primary">{icon}</div>
       </CardHeader>
-      <CardContent>
-        <div className="text-3xl font-black text-foreground tabular-nums">{value}</div>
-        {hint && <p className="text-xs text-muted-foreground font-bold mt-1">{hint}</p>}
+      <CardContent className="min-w-0">
+        <div className="truncate text-2xl font-semibold text-foreground tabular-nums sm:text-3xl">
+          {value}
+        </div>
+        {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
       </CardContent>
     </Card>
   )
@@ -89,12 +92,12 @@ function StatCard({
 
 function ErrorState({ error, onRetry }: { error: string; onRetry: () => void }) {
   return (
-    <Card className="border-2 border-destructive shadow-brutal-sm">
+    <Card className="border border-destructive/40">
       <CardContent className="flex flex-col items-center justify-center gap-3 py-12 text-center">
         <ShieldAlert className="w-10 h-10 text-destructive" />
         <div>
-          <h3 className="font-black uppercase text-foreground">Could not reach the WAF</h3>
-          <p className="text-sm text-muted-foreground font-medium mt-1 max-w-md">{error}</p>
+          <h3 className="font-semibold text-foreground">Could not reach the WAF</h3>
+          <p className="text-sm text-muted-foreground mt-1 max-w-md">{error}</p>
         </div>
         <Button variant="outline" onClick={onRetry}>Try again</Button>
       </CardContent>
@@ -104,12 +107,12 @@ function ErrorState({ error, onRetry }: { error: string; onRetry: () => void }) 
 
 function EmptyState() {
   return (
-    <Card className="border-2 border-dashed border-foreground/40">
+    <Card className="border border-dashed">
       <CardContent className="flex flex-col items-center justify-center gap-3 py-12 text-center">
         <ShieldCheck className="w-10 h-10 text-primary" />
         <div>
-          <h3 className="font-black uppercase text-foreground">No attacks recorded yet</h3>
-          <p className="text-sm text-muted-foreground font-medium mt-1 max-w-md">
+          <h3 className="font-semibold text-foreground">No attacks recorded yet</h3>
+          <p className="text-sm text-muted-foreground mt-1 max-w-md">
             The audit log is empty. Send an attack payload through the proxy and it will
             appear here in real time.
           </p>
@@ -119,55 +122,44 @@ function EmptyState() {
   )
 }
 
-export default function OverviewPage() {
-  const [status, setStatus] = React.useState<Status | null>(null)
-  const [entries, setEntries] = React.useState<AuditEntry[]>([])
-  const [inspectors, setInspectors] = React.useState<Inspector[]>([])
-  const [loading, setLoading] = React.useState(true)
-  const [error, setError] = React.useState<string | null>(null)
+interface OverviewData {
+  status: Status | null
+  // Guarded with ?? [] because a well-formed but empty body (e.g. a 204)
+  // would crash the page when spread into an array.
+  entries: AuditEntry[]
+  inspectors: Inspector[]
+}
 
-  const load = React.useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
+export default function OverviewPage() {
+  // Refresh every 5s so a live demo updates without a manual reload.
+  const { data, loading, error, reload } = usePolling<OverviewData>(
+    async () => {
       const [st, audit, insp] = await Promise.all([
         api.status(),
         api.audit(),
         api.inspectors(),
       ])
-      setStatus(st)
-      // Guard against a well-formed but empty body (e.g. a 204): spreading
-      // undefined into [...] crashes the page with "not iterable".
-      setEntries(audit?.entries ?? [])
-      setInspectors(insp?.inspectors ?? [])
-    } catch (err) {
-      setError(
-        err instanceof ApiError
-          ? `${err.message} (HTTP ${err.status})`
-          : err instanceof Error
-            ? err.message
-            : 'Unknown error',
-      )
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+      return {
+        status: st ?? null,
+        entries: audit?.entries ?? [],
+        inspectors: insp?.inspectors ?? [],
+      }
+    },
+    5_000,
+  )
 
-  React.useEffect(() => {
-    load()
-    // Refresh every 5s so a live demo updates without a manual reload.
-    const id = setInterval(load, 5000)
-    return () => clearInterval(id)
-  }, [load])
+  const status = data?.status ?? null
+  const entries = React.useMemo(() => data?.entries ?? [], [data])
+  const inspectors = React.useMemo(() => data?.inspectors ?? [], [data])
 
   if (error) {
     return (
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-black uppercase tracking-tight text-foreground">Overview</h1>
-          <p className="text-sm text-muted-foreground font-bold">Live security posture</p>
+          <h1 className="text-2xl font-semibold text-foreground">Overview</h1>
+          <p className="text-sm text-muted-foreground">Live security posture</p>
         </div>
-        <ErrorState error={error} onRetry={load} />
+        <ErrorState error={error} onRetry={() => reload()} />
       </div>
     )
   }
@@ -186,11 +178,11 @@ export default function OverviewPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-black uppercase tracking-tight text-foreground">Overview</h1>
-          <p className="text-sm text-muted-foreground font-bold">Live security posture</p>
+          <h1 className="text-2xl font-semibold text-foreground">Overview</h1>
+          <p className="text-sm text-muted-foreground">Live security posture</p>
         </div>
-        <Badge variant="outline" className="border-2 border-foreground font-black uppercase">
-          <span className="mr-1.5 inline-block h-2 w-2 bg-primary" />
+        <Badge variant="outline" className="font-medium">
+          <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-primary" />
           {loading ? 'syncing' : 'live'}
         </Badge>
       </div>
@@ -198,7 +190,7 @@ export default function OverviewPage() {
       {loading && !status ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-28 border-2 border-foreground/20" />
+            <Skeleton key={i} className="h-28" />
           ))}
         </div>
       ) : status ? (
@@ -223,7 +215,7 @@ export default function OverviewPage() {
           />
           <StatCard
             title="Uptime"
-            value={status.uptime}
+            value={formatDuration(status.uptime_seconds)}
             icon={<Clock className="w-5 h-5" />}
             hint={`${status.active_connections} active connections`}
           />
@@ -237,7 +229,7 @@ export default function OverviewPage() {
           className="lg:col-span-2"
         >
           {entries.length === 0 ? (
-            <div className="flex h-48 items-center justify-center text-sm font-bold text-muted-foreground">
+            <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">
               Nothing blocked yet.
             </div>
           ) : (
@@ -245,7 +237,7 @@ export default function OverviewPage() {
               {series.map((point, i) => (
                 <div
                   key={i}
-                  className="flex-1 bg-primary"
+                  className="flex-1 rounded-t-[3px] bg-primary/80 transition-colors hover:bg-primary"
                   style={{
                     height: `${Math.max(2, (point.value / Math.max(1, ...series.map((s) => s.value))) * 100)}%`,
                     minWidth: '4px',
@@ -268,13 +260,13 @@ export default function OverviewPage() {
               .slice(0, 8)
               .map((ins) => (
                 <div key={ins.name} className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-bold text-foreground font-mono">{ins.name}</span>
+                  <span className="text-xs font-medium text-foreground font-mono">{ins.name}</span>
                   <Badge
                     variant="outline"
-                    className={`border-2 font-black tabular-nums ${
+                    className={`border font-medium tabular-nums ${
                       ins.hits > 0
                         ? 'border-primary text-primary'
-                        : 'border-foreground/30 text-muted-foreground'
+                        : 'text-muted-foreground'
                     }`}
                   >
                     {ins.hits}
@@ -289,9 +281,9 @@ export default function OverviewPage() {
         <EmptyState />
       ) : (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <Card className="border-2 border-foreground shadow-brutal lg:col-span-2">
+          <Card className="lg:col-span-2">
             <CardHeader>
-              <CardTitle className="text-sm font-black uppercase tracking-tight">
+              <CardTitle className="text-sm font-semibold">
                 Recent attacks
               </CardTitle>
             </CardHeader>
@@ -299,25 +291,25 @@ export default function OverviewPage() {
               <div className="overflow-x-auto scrollbar-thin">
                 <Table>
                   <TableHeader>
-                    <TableRow className="border-foreground">
-                      <TableHead className="font-black uppercase text-xs">Time</TableHead>
-                      <TableHead className="font-black uppercase text-xs">Rule</TableHead>
-                      <TableHead className="font-black uppercase text-xs">Path</TableHead>
-                      <TableHead className="font-black uppercase text-xs">Source</TableHead>
+                    <TableRow>
+                      <TableHead>Time</TableHead>
+                      <TableHead>Rule</TableHead>
+                      <TableHead>Path</TableHead>
+                      <TableHead>Source</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {recent.map((ent) => {
                       const ruleID = ent.metadata.split(':')[0].trim()
                       return (
-                        <TableRow key={ent.id} className="border-foreground/30">
+                        <TableRow key={ent.id}>
                           <TableCell className="text-xs font-mono text-muted-foreground whitespace-nowrap">
                             {formatDate(ent.timestamp)}
                           </TableCell>
                           <TableCell>
                             <Badge
                               variant="outline"
-                              className={`border-2 font-black text-xs ${severityBadge(ruleID)}`}
+                              className={`border font-medium text-xs ${severityBadge(ruleID)}`}
                             >
                               {ruleID || ent.action}
                             </Badge>
@@ -344,13 +336,13 @@ export default function OverviewPage() {
             <div className="space-y-3">
               {attackers.map((a) => (
                 <div key={a.ip}>
-                  <div className="flex items-center justify-between text-xs font-bold mb-1">
+                  <div className="flex items-center justify-between text-xs font-medium mb-1">
                     <span className="font-mono text-foreground">{a.ip}</span>
                     <span className="text-muted-foreground tabular-nums">{a.attacks}</span>
                   </div>
-                  <div className="h-3 border-2 border-foreground/20 bg-muted">
+                  <div className="h-2 overflow-hidden rounded-full bg-muted">
                     <div
-                      className="h-full bg-destructive"
+                      className="h-full rounded-full bg-destructive/90"
                       style={{ width: `${(a.attacks / attackers[0].attacks) * 100}%` }}
                     />
                   </div>
@@ -368,17 +360,14 @@ export default function OverviewPage() {
         >
           <div className="flex flex-wrap gap-3">
             {families.map((f) => (
-              <div
-                key={f.name}
-                className="border-2 border-foreground bg-card px-4 py-3 shadow-brutal-sm"
-              >
-                <div className="text-xs font-black uppercase text-muted-foreground font-mono">
+              <div key={f.name} className="rounded-control border border-border bg-muted/40 px-4 py-3">
+                <div className="text-xs font-semibold text-muted-foreground font-mono">
                   {f.name}
                 </div>
-                <div className="text-2xl font-black text-foreground tabular-nums">{f.value}</div>
-                <div className="mt-1.5 h-2 w-20 bg-muted border border-foreground/20">
+                <div className="text-2xl font-semibold text-foreground tabular-nums">{f.value}</div>
+                <div className="mt-1.5 h-1.5 w-20 overflow-hidden rounded-full bg-muted">
                   <div
-                    className="h-full bg-primary"
+                    className="h-full rounded-full bg-primary"
                     style={{ width: `${(f.value / maxFamily) * 100}%` }}
                   />
                 </div>
@@ -393,12 +382,7 @@ export default function OverviewPage() {
 
 function severityBadge(ruleID: string): string {
   const sev = severityFor(ruleID)
-  switch (sev) {
-    case 'critical':
-      return 'border-destructive text-destructive'
-    case 'medium':
-      return 'border-yellow-500 text-yellow-500'
-    default:
-      return 'border-orange-500 text-orange-500'
-  }
+  return sev === 'critical'
+    ? 'border-destructive text-destructive'
+    : 'border-warning text-warning'
 }
