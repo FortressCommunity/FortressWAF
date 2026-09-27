@@ -42,7 +42,12 @@ type AdminConfig struct {
 	CACert   string   `yaml:"ca_cert"`
 	CertFile string   `yaml:"cert_file"`
 	KeyFile  string   `yaml:"key_file"`
-	APIKeys  []string `yaml:"api_keys"`
+	APIKeys     []string `yaml:"api_keys"`
+	CORSOrigins  []string `yaml:"cors_origins"`
+	// CIDRs whose X-Forwarded-For is trusted. Empty means the proxy is the
+	// edge: client-supplied forwarded headers are ignored and the TCP peer
+	// address is authoritative.
+	TrustedProxies []string `yaml:"trusted_proxies"`
 }
 
 type RedisConfig struct {

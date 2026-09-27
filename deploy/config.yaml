@@ -36,6 +36,17 @@ admin:
   # CHANGE THIS before the project leaves your laptop.
   api_keys:
     - fortress-demo-admin
+  # Origins allowed to call this admin API from a browser. The dashboard is
+  # served on port 3000; without an entry here its requests are blocked by
+  # the browser's same-origin policy. Add the host/port you present from.
+  cors_origins:
+    - http://localhost:3000
+    - http://127.0.0.1:3000
+  # Empty by default: the proxy treats itself as the edge, so a client cannot
+  # spoof the address its traffic is attributed to (per-IP rate limits,
+  # brute-force lockouts and bot scoring all key off it). List the CIDR of any
+  # real reverse proxy in front of FortressWAF to honour its X-Forwarded-For.
+  trusted_proxies: []
 
 # --- Protected site ---------------------------------------------------------
 sites:

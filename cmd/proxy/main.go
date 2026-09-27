@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"crypto/tls"
 	"database/sql"
 	"encoding/hex"
@@ -168,6 +169,17 @@ func main() {
 
 	eCfg := buildEngineConfig(cfg, *dev)
 	e := engine.New(eCfg)
+
+	// Only peers listed under admin.trusted_proxies may set forwarding
+	// headers. With no list configured the proxy treats itself as the edge,
+	// so a client cannot pick the address its traffic is attributed to.
+	if invalid := e.SetTrustedProxies(cfg.Admin.TrustedProxies); len(invalid) > 0 {
+		slog.Warn("ignoring invalid trusted_proxies entries",
+			"invalid", invalid, "kept", cfg.Admin.TrustedProxies)
+	}
+	if len(cfg.Admin.TrustedProxies) > 0 {
+		slog.Info("trusted proxies configured", "cidrs", cfg.Admin.TrustedProxies)
+	}
 
 	// Initialize rewrite manager
 	rewriteMgr := engine.NewRewriteManager()
@@ -526,7 +538,7 @@ func (h *wafHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if h.auditLog != nil {
 			_ = h.auditLog.Append(compliance.AuditEntry{
 				ActorType: "client",
-				ActorIP:   clientIP(r),
+				ActorIP:   h.engine.ClientIP(r),
 				Action:    "request_blocked",
 				Resource:  r.Host + r.URL.Path,
 				Result:    "blocked",
@@ -630,7 +642,14 @@ func (h *wafHandler) forwardRequest(w http.ResponseWriter, r *http.Request, site
 
 func newAdminRouter(cfgMgr *config.Manager, e *engine.Engine, al *compliance.AuditLog, ce *compliance.ComplianceEngine, adminPort int) http.Handler {
 	r := mux.NewRouter()
-	r.Use(corsMiddleware)
+	r.Use(corsMiddleware(cfgMgr))
+
+	// Browsers send an OPTIONS preflight before the real request when it
+	// carries an Authorization header. gorilla/mux runs middleware only for
+	// routes that match, so a preflight against a GET-only route would 404
+	// and the browser would block the follow-up request. Answer preflight for
+	// the whole API prefix here, before method-specific matching.
+	r.PathPrefix("/api/").Methods("OPTIONS").Handler(corsPreflightHandler(cfgMgr))
 
 	r.HandleFunc("/health", handleHealth).Methods("GET")
 	r.HandleFunc("/metrics", handleMetrics).Methods("GET")
@@ -639,7 +658,6 @@ func newAdminRouter(cfgMgr *config.Manager, e *engine.Engine, al *compliance.Aud
 
 	api := r.PathPrefix("/api/v1").Subrouter()
 	api.HandleFunc("/auth/login", handleAuthLogin(cfgMgr)).Methods("POST", "OPTIONS")
-	api.HandleFunc("/auth/me", handleAuthMe(cfgMgr)).Methods("GET")
 
 	protected := r.PathPrefix("/api/v1").Subrouter()
 	protected.Use(adminAuthMiddleware(cfgMgr))
@@ -656,20 +674,59 @@ func newAdminRouter(cfgMgr *config.Manager, e *engine.Engine, al *compliance.Aud
 	protected.HandleFunc("/compliance/{framework}/assessment", handleComplianceAssessment(ce)).Methods("GET")
 	protected.HandleFunc("/audit", handleAuditLog(al)).Methods("GET")
 
+	// /auth/me returns the caller's identity, so it must be authenticated like
+	// every other protected route. Registering it on the public subrouter made
+	// it echo any bearer token back as an admin.
+	protected.HandleFunc("/auth/me", handleAuthMe(cfgMgr)).Methods("GET")
+
 	return r
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
+// corsMiddleware allows only the origins listed under admin.cors_origins.
+// Sending "Access-Control-Allow-Origin: *" alongside an Authorization header
+// lets any website read authenticated API responses, so the origin is echoed
+// back only when it is explicitly permitted.
+func corsMiddleware(cfgMgr *config.Manager) mux.MiddlewareFunc {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			if origin != "" && originAllowed(origin, cfgMgr.Get().Admin.CORSOrigins) {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Vary", "Origin")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// corsPreflightHandler answers the CORS preflight (OPTIONS) for any API path.
+// It mirrors the allow rules of corsMiddleware; an unlisted origin gets a bare
+// 204, which the browser treats as a failed preflight.
+func corsPreflightHandler(cfgMgr *config.Manager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
+		origin := r.Header.Get("Origin")
+		if origin != "" && originAllowed(origin, cfgMgr.Get().Admin.CORSOrigins) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Max-Age", "600")
 		}
-		next.ServeHTTP(w, r)
+		w.WriteHeader(http.StatusNoContent)
 	})
+}
+
+// originAllowed reports whether origin is in the allow list. An empty list
+// means no cross-origin access is granted.
+func originAllowed(origin string, allowed []string) bool {
+	for _, a := range allowed {
+		if strings.EqualFold(origin, a) {
+			return true
+		}
+	}
+	return false
 }
 
 type authLoginRequest struct {
@@ -701,9 +758,13 @@ func handleAuthLogin(cfgMgr *config.Manager) http.HandlerFunc {
 			return
 		}
 
+		// The demo dashboard sends the key in the password field; either field
+		// is accepted. Compared in constant time.
 		valid := false
 		for _, key := range cfg.Admin.APIKeys {
-			if req.Email == key || req.Password == key {
+			kb := []byte(key)
+			if subtle.ConstantTimeCompare([]byte(req.Email), kb) == 1 ||
+				subtle.ConstantTimeCompare([]byte(req.Password), kb) == 1 {
 				valid = true
 				break
 			}
@@ -734,6 +795,13 @@ func handleAuthMe(cfgMgr *config.Manager) http.HandlerFunc {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}
+		// The token must be a real configured key. Previously any string was
+		// accepted and reflected back as an admin identity.
+		cfg := cfgMgr.Get()
+		if !validAPIKey(token, cfg.Admin.APIKeys) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"id":    token,
 			"email": token,
@@ -743,12 +811,36 @@ func handleAuthMe(cfgMgr *config.Manager) http.HandlerFunc {
 	}
 }
 
+// validAPIKey reports whether key matches one of the configured keys using a
+// constant-time comparison, so the response time does not leak how much of a
+// guessed key was correct.
+func validAPIKey(key string, keys []string) bool {
+	if len(keys) == 0 {
+		return false
+	}
+	kb := []byte(key)
+	var ok bool
+	for _, configured := range keys {
+		cb := []byte(configured)
+		if subtle.ConstantTimeCompare(kb, cb) == 1 {
+			ok = true
+		}
+	}
+	return ok
+}
+
 func adminAuthMiddleware(cfgMgr *config.Manager) mux.MiddlewareFunc {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cfg := cfgMgr.Get()
+			// Fail closed: with no keys configured there is nothing to
+			// authenticate against, so the protected endpoints stay locked
+			// rather than becoming open.
 			if len(cfg.Admin.APIKeys) == 0 {
-				next.ServeHTTP(w, r)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+					"error":  "admin credentials not configured",
+					"detail": "set admin.api_keys in the config file",
+				})
 				return
 			}
 
@@ -770,14 +862,7 @@ func adminAuthMiddleware(cfgMgr *config.Manager) mux.MiddlewareFunc {
 				return
 			}
 
-			valid := false
-			for _, key := range cfg.Admin.APIKeys {
-				if token == key {
-					valid = true
-					break
-				}
-			}
-			if !valid {
+			if !validAPIKey(token, cfg.Admin.APIKeys) {
 				writeJSON(w, http.StatusForbidden, map[string]interface{}{
 					"error":  "forbidden",
 					"detail": "invalid API key",
