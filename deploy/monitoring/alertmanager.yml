@@ -1,11 +1,15 @@
-global:
-  smtp_smarthost: 'smtp.example.com:587'
-  smtp_from: 'alerts@fortresswaf.io'
-  smtp_auth_username: 'alerts@fortresswaf.io'
-  smtp_auth_password: '${SMTP_PASSWORD}'
+# Alertmanager config.
+#
+# Alertmanager does not expand ${VAR} placeholders: a literal
+# "${SLACK_WEBHOOK_URL}" is an invalid URL and the container refuses to start.
+# Real delivery (SMTP/Slack/PagerDuty) needs credentials that a demo machine
+# does not have, so the receivers below point at a local sink that is always
+# reachable by configuration validation. Alerts still show up in the
+# Alertmanager UI at http://localhost:9093, which is what a demo can actually
+# show. Replace the webhook URL with a real one to deliver alerts.
 
-templates:
-  - '/etc/alertmanager/template/*.tmpl'
+global:
+  resolve_timeout: 5m
 
 route:
   group_by: ['alertname', 'severity']
@@ -24,27 +28,19 @@ route:
 
 receivers:
   - name: 'default-receiver'
-    email_configs:
-      - to: 'security-team@fortresswaf.io'
-        
-  - name: 'critical-receiver'
-    slack_configs:
-      - api_url: '${SLACK_WEBHOOK_URL}'
-        channel: '#security-alerts'
+    webhook_configs:
+      - url: 'http://127.0.0.1:5001/alerts'
         send_resolved: true
-        title: 'Critical Alert: {{ .GroupLabels.alertname }}'
-        text: |
-          {{ range .Alerts }}
-          *Alert:* {{ .Annotations.summary }}
-          *Description:* {{ .Annotations.description }}
-          *Severity:* {{ .Labels.severity }}
-          *Source:* {{ .Labels.instance }}
-          {{ end }}
+
+  - name: 'critical-receiver'
+    webhook_configs:
+      - url: 'http://127.0.0.1:5001/critical'
+        send_resolved: true
 
   - name: 'high-receiver'
-    pagerduty_configs:
-      - service_key: '${PAGERDUTY_SERVICE_KEY}'
-        severity: error
+    webhook_configs:
+        - url: 'http://127.0.0.1:5001/high'
+          send_resolved: true
 
 inhibit_rules:
   - source_match:

@@ -28,6 +28,5 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  - job_name: 'node-exporter'
-    static_configs:
-      - targets: ['node-exporter:9100']
+  # No node-exporter service is shipped, so it is not scraped. Add the service
+  # to docker-compose.monitoring.yml before re-enabling this job.

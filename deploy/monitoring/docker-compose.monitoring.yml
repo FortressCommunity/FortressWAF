@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   prometheus:
     image: prom/prometheus:v2.49.1
@@ -81,15 +79,6 @@ services:
     networks:
       - monitoring
 
-  alertmanager-ui:
-    image: prom/alertmanager:v0.27.0
-    container_name: alertmanager-ui
-    command: --alertmanager.url=http://alertmanager:9093
-    ports:
-      - "9094:9094"
-    restart: unless-stopped
-    networks:
-      - monitoring
 
 networks:
   monitoring:
