@@ -82,7 +82,8 @@ Detection is measured, not assumed: the whole `ml-engine` training corpus
 | Tamper-evident audit log (hash-chained entries, admin API `/api/v1/audit`) | **stable** |
 | Next.js dashboard (overview, detection modules, audit log, compliance) | **stable** — reads the endpoints above |
 | SIEM export (Elasticsearch, Splunk HEC) | implemented, off by default |
-| Grafana dashboards (`deploy/monitoring/grafana/dashboards/*.json`) | **not verified** — definitions are bundled but were never rendered end to end |
+| Grafana dashboards (`deploy/monitoring/grafana/dashboards/*.json`) | **stable** — two dashboards (Overview, Security) provisioned and rendered against live Prometheus data; see caveat in [Known Limitations](#known-limitations) |
+| ML / compliance metrics in Grafana | **not available** — the exporter emits no such series, so the two dashboards that queried them were removed rather than left rendering empty panels |
 
 ### Management API
 
@@ -119,11 +120,12 @@ stack (proxy + Postgres + ML sidecar + dashboard) instead:
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-> Verified in this sandbox: `go build`, `go vet`, `go test ./...`, and a live
-> smoke test of the binary. **The Docker stack was not** — this sandbox has
-> podman without a compose plugin, so the compose file was validated by
-> inspection and its healthchecks were checked against the binary, not by
-> `compose up`. Run it once on the presentation machine before the demo.
+> Verified end to end in this sandbox: `go build`, `go vet`, `go test ./...`,
+> a live smoke test of the binary, and a full `docker compose up` of the
+> proxy, Postgres, ML sidecar, dashboard, and monitoring stack — every service
+> reached a healthy state, the WAF blocked attack payloads through the stack,
+> and Grafana rendered real metrics. See [Demo scenario](#demo-scenario) and
+> [Known Limitations](#known-limitations).
 
 Minimal config (what `deploy/config.yaml` actually contains, abridged):
 
@@ -188,6 +190,20 @@ Two things worth pointing out to an audience:
   has a false-positive test (`TestFalsePositive_*` in `tests/unit/`) that
   replays benign input — ordinary English containing SQL keywords, browser
   User-Agents, benign paths — and fails if any of it is blocked.
+
+To show blocked traffic as charts rather than curl output, bring up the
+monitoring stack alongside the main one and open Grafana at
+<http://localhost:3001> (admin/admin):
+
+```bash
+docker compose -f deploy/monitoring/docker-compose.monitoring.yml up -d
+```
+
+The "FortressWAF Overview" dashboard shows requests/sec, the allowed-vs-blocked
+split, and the block ratio; "FortressWAF Security" breaks the enforcement
+actions (blocked, monitored, challenged, rate-limited) out separately. Both
+refresh every 10 seconds, so payloads sent through the proxy appear on screen
+during the demo.
 
 ---
 
@@ -254,10 +270,15 @@ actually measured here, not marketing figures.
 Stated plainly, because hiding them would be worse than having them:
 
 1. **The ML sidecar is not in the request path.** `internal/ml/client.go` and
-   `ml-engine/api/app.py` now agree on a request/response contract, but the
-   proxy never calls it — detection is entirely rule-based. The bundled model
-   is also untrained: `ml-engine` falls back to heuristic scoring. Treat the
-   ML component as scaffolding, not a working classifier.
+   `ml-engine/api/app.py` agree on a request/response contract (verified: the
+   Go request struct matches the FastAPI schema field for field, and both
+   endpoints answer on the running sidecar), but the proxy never calls it —
+   detection is entirely rule-based. The bundled model is also untrained:
+   `ml-engine` answers from heuristic scoring, and it mislabels payloads
+   (a SQLi string is returned as `command-injection` at ~8% confidence). The
+   sidecar starts and reports healthy in the docker stack, and its
+   `/v1/classify` and `/v1/inspect` endpoints work, but treat the ML component
+   as scaffolding, not a working classifier.
 2. **Compliance is verification, not enforcement.** The compliance module
    checks a subset of controls against live runtime state (is the WAF enabled?
    are the SQLi/XSS inspectors on? is the audit log actually recording?).
@@ -278,8 +299,13 @@ Stated plainly, because hiding them would be worse than having them:
    enterprise/community feature split that the code does not implement. Trust
    this README and `deploy/config.yaml` for what actually works; read `docs/`
    as design notes.
-8. **The Docker stack was validated by inspection, not execution** (no compose
-   runtime in the sandbox). Healthchecks were verified against the live binary.
+8. **The Docker stack runs, and only what it runs is claimed.** The stack
+   (proxy + Postgres + ML sidecar + dashboard) and the separate monitoring
+   stack (Prometheus + Grafana + Loki + Alertmanager) were both built and
+   started end to end; all healthchecks pass. Two caveats remain: Alertmanager
+   receivers point at a local sink (`http://127.0.0.1:5001`) because real
+   delivery needs SMTP/Slack credentials, and the monitoring stack is a
+   second `docker compose` file that must be brought up separately.
 9. **Untrained-model honesty:** detection rates in the feature table are
    measured against a payload corpus, which is a lab measurement — not proof
    of performance against a skilled attacker with bypass tooling.
