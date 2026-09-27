@@ -91,6 +91,25 @@ The admin API (`/api/v1` on the admin port) exposes auth/login, health, status,
 config read/reload, sites, rules, compliance assessment, and the audit log. It
 requires a bearer token obtained from `POST /api/v1/auth/login`.
 
+Access controls, all verified live against the running stack:
+
+* **Keys are compared in constant time** (`crypto/subtle`) at login and on every
+  authenticated request, so response timing does not reveal a correct prefix.
+* **Failed logins are rate-limited.** Five wrong attempts per source address in
+  a minute lock that address out for fifteen minutes, returning `429` with
+  `Retry-After`. A locked-out caller is refused *before* the credential check,
+  so a valid key is not confirmed while the lock is active.
+* **No keys configured, no access.** The middleware fails closed (`503`) rather
+  than serving protected routes unauthenticated.
+* **`/auth/me` authenticates.** It used to reflect any bearer token back as an
+  admin identity; it now requires a configured key.
+* **The peer address is authoritative.** A client-supplied `X-Forwarded-For` is
+  ignored unless the peer is listed in `admin.trusted_proxies`. Without this,
+  per-IP rate limits, brute-force lockouts and bot scoring were all bypassable
+  with one header, and the audit log recorded the spoofed address.
+* **CORS is an allow list**, not `*`: only origins under
+  `admin.cors_origins` may read authenticated API responses from a browser.
+
 ---
 
 ## Quick start
@@ -264,6 +283,13 @@ hardware. Server-grade CPUs will be faster; the numbers above are the ones
 actually measured here, not marketing figures.
 
 ---
+
+## Security posture
+
+`govulncheck ./...` reports **0 vulnerabilities in code paths** (4 remain in
+required modules, none called) and `npm audit` reports **0** for the dashboard.
+Detection rates are replayed from the payload corpus in
+`tests/unit/payload_corpus_test.go`.
 
 ## Known limitations
 
