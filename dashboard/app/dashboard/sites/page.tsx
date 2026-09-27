@@ -19,7 +19,7 @@ export default function SitesPage() {
     setError(null)
     try {
       const res = await api.sites()
-      setSites(res.sites)
+      setSites(res?.sites ?? [])
     } catch (err) {
       setError(
         err instanceof ApiError

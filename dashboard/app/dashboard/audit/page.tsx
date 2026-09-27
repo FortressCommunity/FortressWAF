@@ -25,9 +25,9 @@ export default function AuditPage() {
     setError(null)
     try {
       const audit = await api.audit()
-      setEntries(audit.entries)
-      setTotal(audit.total)
-      setIntegrity(audit.integrity.valid)
+      setEntries(audit?.entries ?? [])
+      setTotal(audit?.total ?? 0)
+      setIntegrity(audit?.integrity?.valid ?? null)
     } catch (err) {
       setError(
         err instanceof ApiError

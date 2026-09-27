@@ -38,8 +38,8 @@ export default function RulesPage() {
     setError(null)
     try {
       const [insp, cfgRules] = await Promise.all([api.inspectors(), api.rules()])
-      setInspectors(insp.inspectors)
-      setRules(cfgRules.rules)
+      setInspectors(insp?.inspectors ?? [])
+      setRules(cfgRules?.rules ?? [])
     } catch (err) {
       setError(
         err instanceof ApiError

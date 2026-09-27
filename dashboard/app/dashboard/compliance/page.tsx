@@ -22,9 +22,9 @@ export default function CompliancePage() {
     setError(null)
     try {
       const list = await api.compliance.frameworks()
-      setFrameworks(list.frameworks)
+      setFrameworks(list?.frameworks ?? [])
       if (list.frameworks.length && !activeID) {
-        setActiveID(list.frameworks[0].id)
+        setActiveID(list?.frameworks?.[0]?.id ?? null)
       }
     } catch (err) {
       setError(

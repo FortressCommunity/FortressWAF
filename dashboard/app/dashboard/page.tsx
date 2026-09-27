@@ -136,8 +136,10 @@ export default function OverviewPage() {
         api.inspectors(),
       ])
       setStatus(st)
-      setEntries(audit.entries)
-      setInspectors(insp.inspectors)
+      // Guard against a well-formed but empty body (e.g. a 204): spreading
+      // undefined into [...] crashes the page with "not iterable".
+      setEntries(audit?.entries ?? [])
+      setInspectors(insp?.inspectors ?? [])
     } catch (err) {
       setError(
         err instanceof ApiError
