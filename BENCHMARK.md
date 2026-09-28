@@ -37,15 +37,35 @@ go test -bench=. -benchmem -run=^$ ./tests/unit/ -count=5
 | `BenchmarkXSSSinglePayload` | 329.0 | 144 | 1 |
 | `BenchmarkRCESinglePayload` | 310.7 | 144 | 1 |
 
-## Reading these numbers
+## Reading these numbers — what actually matters
 
-- **Single payload checks are sub-microsecond** (~310–354 ns, 1 alloc, 144 B) — the hot path for a WAF inspecting a header or argument. At ~3,000,000 checks/sec per core this is not the bottleneck.
-- **Full request inspection costs ~0.37–0.41 ms** (`FullEngineAttackRequest` / `FullEngineNormalRequest`), which is the realistic per-request overhead for a proxied HTTP request. On this 4 vCPU box that is roughly **10k requests/sec** of pure inspection headroom, before the actual proxying work.
-- **`FullEngineInspection` at ~1.77 ms** runs the full pipeline across every detector against a large batch of payloads, so it is the aggregate figure, not a per-request cost.
-- **Allocations are the real cost**: the `*Detection` benchmarks do 159–160 allocs/op while the single-payload variants do 1. If request latency ever matters, that is where to look — the per-payload regex/detector path is already essentially allocation-free.
-- **`DDoSProtection` allocates ~254–257 KB per call**, by far the largest memory footprint of any benchmark. Worth profiling if memory pressure on the proxy is ever observed.
+1. **The hot path is essentially free.** Every single-payload check
+   (SQLi/XSS/RCE, one user agent) runs in ~0.3–0.4 µs with **1 allocation and
+   144 bytes**. At ~3M checks/sec/core this is not the bottleneck of the WAF.
+2. **A real request costs ~0.4 ms.** `FullEngineNormalRequest` (394 µs) and
+   `FullEngineAttackRequest` (404 µs) are the numbers to quote as per-request
+   inspection overhead — roughly **2,500 req/s per core**, ~10k req/s on this
+   4 vCPU box, before the actual proxying work.
+3. **Allocations, not CPU, are the cost.** Compare the detection benchmarks:
+   the batched `*Detection` variants do **159–160 allocs/op** while the
+   equivalent single-payload variants do **1**. If per-request latency ever
+   matters, that is where to look — the per-payload regex path is already
+   allocation-free.
+4. **`DDoSProtection` allocates ~255 KB per call** — by far the largest memory
+   footprint of any benchmark. Worth profiling if memory pressure on the proxy
+   is ever observed.
+5. **`BenchmarkFullEngineInspection` (1.77 ms) is not a per-request cost.** It
+   runs the full pipeline across every detector against a large batch of
+   payloads, so it is the aggregate figure. Do not compare it to the
+   per-request numbers.
 
-> Note: these numbers are from a shared 4 vCPU cloud VM, not dedicated benchmark hardware. Treat them as a consistent baseline for *relative* comparison (this machine against itself), not as absolute performance claims. Absolute throughput will differ on production hardware.
+> **Baseline, not a target.** These numbers come from a shared 4 vCPU cloud VM,
+> not dedicated benchmark hardware. Treat them as a consistent baseline for
+> *relative* comparison (this machine against itself, e.g. when checking whether
+> a change regressed performance), not as absolute performance claims. Absolute
+> throughput will be different on production hardware. The README
+> [Performance](README.md#performance) section quotes the headline figures from
+> this run.
 
 ## Raw output
 
