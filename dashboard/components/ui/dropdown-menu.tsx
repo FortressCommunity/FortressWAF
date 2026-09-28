@@ -38,7 +38,7 @@ const DropdownMenuSubContent = React.forwardRef<
   <DropdownMenuPrimitive.SubContent
     ref={ref}
     className={cn(
-      'z-50 min-w-[8rem] overflow-hidden border-2 border-foreground bg-popover p-0 text-popover-foreground shadow-brutal',
+      'z-50 min-w-[8rem] overflow-hidden glass-overlay rounded-panel p-1 text-popover-foreground',
       className,
     )}
     {...props}
@@ -55,7 +55,7 @@ const DropdownMenuContent = React.forwardRef<
       ref={ref}
       sideOffset={sideOffset}
       className={cn(
-        'z-50 min-w-[8rem] overflow-hidden border-2 border-foreground bg-popover p-0 text-popover-foreground shadow-brutal',
+        'z-50 min-w-[8rem] overflow-hidden glass-overlay rounded-panel p-1 text-popover-foreground',
         className,
       )}
       {...props}
@@ -71,7 +71,7 @@ const DropdownMenuItem = React.forwardRef<
   <DropdownMenuPrimitive.Item
     ref={ref}
     className={cn(
-      'relative flex cursor-default select-none items-center px-2 py-2 text-sm font-medium outline-none transition-colors hover:bg-muted focus:bg-muted data-[disabled]:pointer-events-none data-[disabled]:opacity-50 border-b-2 border-foreground last:border-b-0',
+      'relative flex cursor-default select-none items-center px-2 py-2 text-sm font-medium outline-none transition-colors hover:bg-muted focus:bg-muted data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       inset && 'pl-8',
       className,
     )}
@@ -87,7 +87,7 @@ const DropdownMenuCheckboxItem = React.forwardRef<
   <DropdownMenuPrimitive.CheckboxItem
     ref={ref}
     className={cn(
-      'relative flex cursor-default select-none items-center py-2 pl-8 pr-2 text-sm font-medium outline-none transition-colors hover:bg-muted focus:bg-muted data-[disabled]:pointer-events-none data-[disabled]:opacity-50 border-b-2 border-foreground last:border-b-0',
+      'relative flex cursor-default select-none items-center py-2 pl-8 pr-2 text-sm font-medium outline-none transition-colors hover:bg-muted focus:bg-muted data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       className,
     )}
     checked={checked}
@@ -110,7 +110,7 @@ const DropdownMenuRadioItem = React.forwardRef<
   <DropdownMenuPrimitive.RadioItem
     ref={ref}
     className={cn(
-      'relative flex cursor-default select-none items-center py-2 pl-8 pr-2 text-sm font-medium outline-none transition-colors hover:bg-muted focus:bg-muted data-[disabled]:pointer-events-none data-[disabled]:opacity-50 border-b-2 border-foreground last:border-b-0',
+      'relative flex cursor-default select-none items-center py-2 pl-8 pr-2 text-sm font-medium outline-none transition-colors hover:bg-muted focus:bg-muted data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       className,
     )}
     {...props}
@@ -131,7 +131,7 @@ const DropdownMenuLabel = React.forwardRef<
 >(({ className, inset, ...props }, ref) => (
   <DropdownMenuPrimitive.Label
     ref={ref}
-    className={cn('px-2 py-2 text-sm font-black uppercase border-b-2 border-foreground', inset && 'pl-8', className)}
+    className={cn('px-2 py-1.5 text-xs font-medium text-muted-foreground', inset && 'pl-8', className)}
     {...props}
   />
 ))
@@ -141,12 +141,12 @@ const DropdownMenuSeparator = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.Separator>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Separator>
 >(({ className, ...props }, ref) => (
-  <DropdownMenuPrimitive.Separator ref={ref} className={cn('h-0 border-b-2 border-foreground', className)} {...props} />
+  <DropdownMenuPrimitive.Separator ref={ref} className={cn('h-0 border-b border-border', className)} {...props} />
 ))
 DropdownMenuSeparator.displayName = DropdownMenuPrimitive.Separator.displayName
 
 const DropdownMenuShortcut = ({ className, ...props }: React.HTMLAttributes<HTMLSpanElement>) => {
-  return <span className={cn('ml-auto text-xs tracking-widest opacity-60', className)} {...props} />
+  return <span className={cn('ml-auto text-xs opacity-60', className)} {...props} />
 }
 DropdownMenuShortcut.displayName = 'DropdownMenuShortcut'
 

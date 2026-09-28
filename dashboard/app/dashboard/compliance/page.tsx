@@ -8,67 +8,55 @@ import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Skeleton } from '@/components/ui/skeleton'
 import { api, ApiError } from '@/lib/api'
+import { usePolling } from '@/lib/use-polling'
 import type { ComplianceFramework, ComplianceAssessment } from '@/types'
 
 export default function CompliancePage() {
-  const [frameworks, setFrameworks] = React.useState<ComplianceFramework[]>([])
-  const [selected, setSelected] = React.useState<ComplianceAssessment | null>(null)
+  const { data, loading, error, reload } = usePolling(
+    () => api.compliance.frameworks(),
+    60_000,
+  )
+  const frameworks = React.useMemo(() => data?.frameworks ?? [], [data])
+
+  // User selection, falling back to the first framework once the list loads.
+  // Derived rather than set in an effect so the default tracks the data.
   const [activeID, setActiveID] = React.useState<string>('')
-  const [loading, setLoading] = React.useState(true)
-  const [error, setError] = React.useState<string | null>(null)
+  const selectedID = activeID || frameworks[0]?.id || ''
 
-  const load = React.useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const list = await api.compliance.frameworks()
-      setFrameworks(list.frameworks)
-      if (list.frameworks.length && !activeID) {
-        setActiveID(list.frameworks[0].id)
-      }
-    } catch (err) {
-      setError(
-        err instanceof ApiError
-          ? `${err.message} (HTTP ${err.status})`
-          : err instanceof Error ? err.message : 'Unknown error',
-      )
-    } finally {
-      setLoading(false)
-    }
-  }, [activeID])
+  const [selected, setSelected] = React.useState<ComplianceAssessment | null>(null)
+  const [assessmentError, setAssessmentError] = React.useState<string | null>(null)
 
   React.useEffect(() => {
-    load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  React.useEffect(() => {
-    if (!activeID) return
+    if (!selectedID) return
     let cancelled = false
     api.compliance
-      .assessment(activeID)
-      .then((a) => { if (!cancelled) setSelected(a) })
+      .assessment(selectedID)
+      .then((a) => {
+        if (cancelled) return
+        setSelected(a)
+        setAssessmentError(null)
+      })
       .catch((err) => {
         if (cancelled) return
         setSelected(null)
-        setError(
+        setAssessmentError(
           err instanceof ApiError
             ? `${err.message} (HTTP ${err.status})`
             : err instanceof Error ? err.message : 'Unknown error',
         )
       })
     return () => { cancelled = true }
-  }, [activeID])
+  }, [selectedID])
 
   if (error && frameworks.length === 0) {
     return (
       <div className="space-y-6">
-        <h1 className="text-2xl font-black uppercase tracking-tight text-foreground">Compliance</h1>
-        <Card className="border-2 border-destructive shadow-brutal-sm">
+        <h1 className="text-2xl font-semibold text-foreground">Compliance</h1>
+        <Card className="border border-destructive/40">
           <CardContent className="flex flex-col items-center justify-center gap-3 py-12 text-center">
             <ShieldAlert className="w-10 h-10 text-destructive" />
-            <p className="text-sm text-muted-foreground font-medium">{error}</p>
-            <Button variant="outline" onClick={load}>Try again</Button>
+            <p className="text-sm text-muted-foreground">{error}</p>
+            <Button variant="outline" onClick={() => reload()}>Try again</Button>
           </CardContent>
         </Card>
       </div>
@@ -78,8 +66,8 @@ export default function CompliancePage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-black uppercase tracking-tight text-foreground">Compliance</h1>
-        <p className="text-sm text-muted-foreground font-bold max-w-2xl">
+        <h1 className="text-2xl font-semibold text-foreground">Compliance</h1>
+        <p className="text-sm text-muted-foreground max-w-2xl">
           Control verification against live runtime state. Automated controls are checked
           here; the rest need evidence outside the software and are labelled manual.
         </p>
@@ -88,7 +76,7 @@ export default function CompliancePage() {
       {loading ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-40 border-2 border-foreground/20" />
+            <Skeleton key={i} className="h-40" />
           ))}
         </div>
       ) : (
@@ -97,27 +85,25 @@ export default function CompliancePage() {
             <button
               key={fw.id}
               onClick={() => setActiveID(fw.id)}
-              className={`text-left border-2 p-5 shadow-brutal transition-all ${
-                activeID === fw.id
-                  ? 'border-foreground bg-primary/10 shadow-brutal-primary'
-                  : 'border-foreground bg-card hover:shadow-brutal-primary'
+              className={`glass rounded-panel text-left p-5 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                selectedID === fw.id ? 'ring-2 ring-primary' : 'hover:bg-muted/40'
               }`}
             >
-              <h3 className="font-black uppercase text-foreground tracking-tight">{fw.id}</h3>
-              <p className="text-xs text-muted-foreground font-medium mt-1 mb-4">{fw.description}</p>
+              <h3 className="font-semibold text-foreground tracking-tight">{fw.id}</h3>
+              <p className="text-xs text-muted-foreground mt-1 mb-4">{fw.description}</p>
               <div className="flex items-baseline gap-2">
-                <span className="text-4xl font-black text-foreground tabular-nums">
+                <span className="text-4xl font-semibold text-foreground tabular-nums">
                   {fw.compliant_percent.toFixed(0)}%
                 </span>
-                <span className="text-xs font-bold text-muted-foreground uppercase">of automated</span>
+                <span className="text-xs text-muted-foreground">of automated</span>
               </div>
-              <div className="mt-3 h-3 border-2 border-foreground/20 bg-muted">
+              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted">
                 <div
-                  className="h-full bg-primary"
+                  className="h-full rounded-full bg-primary"
                   style={{ width: `${fw.compliant_percent}%` }}
                 />
               </div>
-              <p className="text-xs text-muted-foreground font-bold mt-2">
+              <p className="text-xs text-muted-foreground mt-2">
                 {fw.compliant}/{fw.automated} automated controls verified · {fw.manual} manual
               </p>
             </button>
@@ -126,12 +112,12 @@ export default function CompliancePage() {
       )}
 
       {selected ? (
-        <Card className="border-2 border-foreground shadow-brutal">
+        <Card>
           <CardHeader>
-            <CardTitle className="text-sm font-black uppercase tracking-tight">
+            <CardTitle className="text-sm font-semibold">
               {selected.framework} assessment
             </CardTitle>
-            <p className="text-xs text-muted-foreground font-medium">
+            <p className="text-xs text-muted-foreground">
               Assessed {new Date(selected.assessed_at).toLocaleString()}
             </p>
           </CardHeader>
@@ -139,28 +125,28 @@ export default function CompliancePage() {
             <div className="overflow-x-auto scrollbar-thin">
               <Table>
                 <TableHeader>
-                  <TableRow className="border-foreground">
-                    <TableHead className="font-black uppercase text-xs">Control</TableHead>
-                    <TableHead className="font-black uppercase text-xs">Status</TableHead>
-                    <TableHead className="font-black uppercase text-xs">Evidence</TableHead>
+                  <TableRow>
+                    <TableHead>Control</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Evidence</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {selected.controls.map((c) => (
-                    <TableRow key={c.id} className="border-foreground/30 align-top">
+                    <TableRow key={c.id} className="align-top">
                       <TableCell>
-                        <div className="font-mono text-xs font-bold text-foreground">{c.id}</div>
-                        <div className="text-xs text-muted-foreground font-medium">{c.name}</div>
+                        <div className="font-mono text-xs font-medium text-foreground">{c.id}</div>
+                        <div className="text-xs text-muted-foreground">{c.name}</div>
                       </TableCell>
                       <TableCell>
                         <Badge
                           variant="outline"
-                          className={`border-2 font-black text-xs ${
+                          className={`font-medium text-xs ${
                             c.status === 'compliant'
                               ? 'border-primary text-primary'
                               : c.status === 'non-compliant'
                                 ? 'border-destructive text-destructive'
-                                : 'border-foreground/40 text-muted-foreground'
+                                : 'text-muted-foreground'
                           }`}
                         >
                           {c.status}
@@ -170,7 +156,7 @@ export default function CompliancePage() {
                         {c.evidence && c.evidence.length > 0 ? (
                           <ul className="space-y-1">
                             {c.evidence.map((ev, i) => (
-                              <li key={i} className="text-xs text-foreground font-medium flex gap-1.5">
+                              <li key={i} className="text-xs text-foreground flex gap-1.5">
                                 <ShieldCheck className="w-3.5 h-3.5 mt-0.5 shrink-0 text-primary" />
                                 <span>{ev.description}</span>
                               </li>
@@ -191,11 +177,13 @@ export default function CompliancePage() {
         </Card>
       ) : (
         !loading && frameworks.length === 0 && (
-          <Card className="border-2 border-dashed border-foreground/40">
+          <Card className="border border-dashed">
             <CardContent className="flex flex-col items-center justify-center gap-2 py-12 text-center">
               <ShieldAlert className="w-8 h-8 text-muted-foreground" />
-              <p className="text-sm font-bold text-muted-foreground">
-                No compliance frameworks available.
+              <p className="text-sm text-muted-foreground">
+                {assessmentError
+                  ? `Could not load the assessment: ${assessmentError}`
+                  : 'No compliance frameworks available.'}
               </p>
             </CardContent>
           </Card>

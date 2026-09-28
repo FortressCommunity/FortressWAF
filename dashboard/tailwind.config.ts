@@ -1,5 +1,8 @@
 import type { Config } from 'tailwindcss'
 
+// Tokens live in app/globals.css; this file only names them for the utility
+// classes. Values are HSL channel triples so Tailwind v4 can derive alpha
+// variants (bg-primary/40) with color-mix.
 const config: Config = {
   content: [
     './pages/**/*.{js,ts,jsx,tsx,mdx}',
@@ -26,6 +29,10 @@ const config: Config = {
           DEFAULT: 'hsl(var(--destructive))',
           foreground: 'hsl(var(--destructive-foreground))',
         },
+        warning: {
+          DEFAULT: 'hsl(var(--warning))',
+          foreground: 'hsl(var(--warning-foreground))',
+        },
         muted: {
           DEFAULT: 'hsl(var(--muted))',
           foreground: 'hsl(var(--muted-foreground))',
@@ -42,39 +49,14 @@ const config: Config = {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-foreground))',
         },
-        fortress: {
-          50: '#ecfeff',
-          100: '#cffafe',
-          200: '#a5f3fc',
-          300: '#67e8f9',
-          400: '#22d3ee',
-          500: '#06b6d4',
-          600: '#0891b2',
-          700: '#0e7490',
-          800: '#155e75',
-          900: '#0c4a6e',
-          950: '#042f2e',
-        },
       },
-      boxShadow: {
-        brutal: '4px 4px 0px 0px hsl(var(--foreground))',
-        'brutal-sm': '2px 2px 0px 0px hsl(var(--foreground))',
-        'brutal-lg': '6px 6px 0px 0px hsl(var(--foreground))',
-        'brutal-primary': '4px 4px 0px 0px hsl(var(--primary))',
+      borderRadius: {
+        panel: 'var(--radius)',
+        control: 'var(--radius-sm)',
       },
-      keyframes: {
-        'accordion-down': {
-          from: { height: '0' },
-          to: { height: 'var(--radix-accordion-content-height)' },
-        },
-        'accordion-up': {
-          from: { height: 'var(--radix-accordion-content-height)' },
-          to: { height: '0' },
-        },
-      },
-      animation: {
-        'accordion-down': 'accordion-down 0.2s ease-out',
-        'accordion-up': 'accordion-up 0.2s ease-out',
+      fontFamily: {
+        sans: ['var(--font-plex-sans)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        mono: ['var(--font-plex-mono)', 'ui-monospace', 'SFMono-Regular', 'monospace'],
       },
     },
   },

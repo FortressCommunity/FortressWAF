@@ -3,74 +3,128 @@
 
 @layer base {
   :root {
-    --background: 48 33% 95%;
-    --foreground: 0 0% 10%;
-    --card: 48 33% 95%;
-    --card-foreground: 0 0% 10%;
-    --popover: 48 33% 95%;
-    --popover-foreground: 0 0% 10%;
-    --primary: 187 85% 35%;
+    --background: 210 31% 95%;
+    --foreground: 212 36% 9%;
+    --card: 0 0% 100%;
+    --card-foreground: 212 36% 9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 212 36% 9%;
+    --primary: 193 82% 31%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 42 70% 55%;
-    --secondary-foreground: 0 0% 10%;
-    --muted: 48 20% 88%;
-    --muted-foreground: 0 0% 40%;
-    --accent: 330 80% 55%;
+    --secondary: 210 30% 89%;
+    --secondary-foreground: 212 36% 9%;
+    --muted: 210 29% 92%;
+    --muted-foreground: 212 13% 38%;
+    --accent: 193 82% 31%;
     --accent-foreground: 0 0% 100%;
-    --destructive: 0 84% 55%;
+    --destructive: 350 67% 42%;
     --destructive-foreground: 0 0% 100%;
-    --border: 0 0% 10%;
-    --input: 0 0% 10%;
-    --ring: 0 0% 10%;
-    --radius: 0;
+    --warning: 39 100% 27%;
+    --warning-foreground: 0 0% 100%;
+    --border: 212 24% 86%;
+    --input: 214 15% 55%;
+    --ring: 193 82% 31%;
+
+    --radius: 14px;
+    --radius-sm: 9px;
+
+    /* How opaque the frosted panels sit over the backdrop. Light mode needs a
+       heavier fill because a low-alpha white over a pale page reads as flat. */
+    --glass: 0.72;
+    --glass-chrome: 0.7;
   }
 
   .dark {
-    --background: 0 0% 8%;
-    --foreground: 0 0% 95%;
-    --card: 0 0% 10%;
-    --card-foreground: 0 0% 95%;
-    --popover: 0 0% 10%;
-    --popover-foreground: 0 0% 95%;
-    --primary: 187 75% 50%;
-    --primary-foreground: 0 0% 10%;
-    --secondary: 42 60% 45%;
-    --secondary-foreground: 0 0% 95%;
-    --muted: 0 0% 15%;
-    --muted-foreground: 0 0% 60%;
-    --accent: 330 70% 50%;
-    --accent-foreground: 0 0% 95%;
-    --destructive: 0 75% 50%;
-    --destructive-foreground: 0 0% 95%;
-    --border: 0 0% 95%;
-    --input: 0 0% 95%;
-    --ring: 0 0% 95%;
-  }
-}
+    --background: 213 31% 6%;
+    --foreground: 210 29% 93%;
+    --card: 207 18% 10%;
+    --card-foreground: 210 29% 93%;
+    --popover: 207 18% 10%;
+    --popover-foreground: 210 29% 93%;
+    --primary: 191 73% 49%;
+    --primary-foreground: 202 58% 6%;
+    --secondary: 210 25% 19%;
+    --secondary-foreground: 210 29% 93%;
+    --muted: 214 23% 14%;
+    --muted-foreground: 211 15% 65%;
+    --accent: 190 79% 57%;
+    --accent-foreground: 202 58% 6%;
+    --destructive: 349 100% 71%;
+    --destructive-foreground: 349 68% 6%;
+    --warning: 42 87% 55%;
+    --warning-foreground: 37 68% 6%;
+    --border: 212 21% 17%;
+    --input: 214 16% 42%;
+    --ring: 187 92% 69%;
 
-@layer base {
-  * {
-    @apply border-border;
+    --glass: 0.62;
+    --glass-chrome: 0.55;
   }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
   body {
     @apply bg-background text-foreground font-sans;
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    /* The glass panels need something behind them to frost, otherwise the
+       translucency reads as flat grey. Kept to a single low-alpha wash so it
+       is ambient light, not a decorative orb. */
+    background-image: radial-gradient(
+      1100px 620px at 15% -15%,
+      hsl(var(--primary) / 0.1),
+      transparent 70%
+    );
+    background-attachment: fixed;
+  }
+
+  h1, h2, h3 {
+    @apply font-semibold tracking-tight;
+  }
+
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
   }
 }
 
 @layer utilities {
-  .brutal-shadow {
-    box-shadow: 4px 4px 0px 0px hsl(var(--foreground));
+  /* The one glass recipe. Applied to surfaces that float above the backdrop;
+     inner content (rows, inputs, list items) stays flat so depth still reads. */
+  .glass {
+    background-color: hsl(var(--card) / var(--glass));
+    -webkit-backdrop-filter: blur(18px) saturate(150%);
+    backdrop-filter: blur(18px) saturate(150%);
+    border: 1px solid hsl(var(--border));
+    box-shadow:
+      inset 0 1px 0 hsl(var(--foreground) / 0.05),
+      0 18px 40px -28px rgb(0 0 0 / 0.55);
   }
-  .brutal-shadow-sm {
-    box-shadow: 2px 2px 0px 0px hsl(var(--foreground));
+
+  .glass-chrome {
+    background-color: hsl(var(--card) / var(--glass-chrome));
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
+    backdrop-filter: blur(22px) saturate(160%);
   }
-  .brutal-shadow-lg {
-    box-shadow: 6px 6px 0px 0px hsl(var(--foreground));
+
+  .glass-overlay {
+    background-color: hsl(var(--card) / 0.85);
+    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    backdrop-filter: blur(24px) saturate(160%);
+    border: 1px solid hsl(var(--border));
+    box-shadow: 0 24px 60px -20px rgb(0 0 0 / 0.6);
   }
-  .brutal-border {
-    border: 2px solid hsl(var(--foreground));
-  }
+
   .scrollbar-thin {
     scrollbar-width: thin;
     scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
@@ -84,8 +138,20 @@
   }
   .scrollbar-thin::-webkit-scrollbar-thumb {
     background-color: hsl(var(--muted-foreground) / 0.3);
+    border-radius: 9999px;
   }
   .scrollbar-thin::-webkit-scrollbar-thumb:hover {
     background-color: hsl(var(--muted-foreground) / 0.5);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

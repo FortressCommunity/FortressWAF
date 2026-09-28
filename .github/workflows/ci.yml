@@ -51,8 +51,8 @@ jobs:
       - name: Build proxy
         run: go build -o /tmp/fortresswaf ./cmd/proxy
 
-    - name: Verify binary
-      run: file /tmp/fortresswaf && ls -lh /tmp/fortresswaf
+      - name: Verify binary
+        run: file /tmp/fortresswaf && ls -lh /tmp/fortresswaf
 
   test-go:
     name: Test Go

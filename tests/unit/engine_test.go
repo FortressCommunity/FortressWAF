@@ -277,7 +277,12 @@ func TestRequestContextCreation(t *testing.T) {
 		"name":  "test",
 		"email": "test@example.com",
 	})
+	req.RemoteAddr = "192.0.2.1:12345"
 	req.Header.Set("Content-Type", "application/json")
+	// A client-supplied forwarded header must not become the recorded
+	// address: NewRequestContext is unauthenticated about proxies, so it
+	// uses the TCP peer. Engine.ContextFromRequest resolves through the
+	// trusted-proxy list instead (see internal/engine/clientip_test.go).
 	req.Header.Set("X-Forwarded-For", "10.0.0.1")
 	req.Header.Set("User-Agent", "TestClient/1.0")
 
@@ -289,8 +294,8 @@ func TestRequestContextCreation(t *testing.T) {
 	if ctx.Path != "/api/users" {
 		t.Errorf("expected path /api/users, got %s", ctx.Path)
 	}
-	if ctx.RealIP != "10.0.0.1" {
-		t.Errorf("expected RealIP 10.0.0.1, got %s", ctx.RealIP)
+	if ctx.RealIP != "192.0.2.1" {
+		t.Errorf("NewRequestContext must ignore X-Forwarded-For: expected peer 192.0.2.1, got %s", ctx.RealIP)
 	}
 	if ctx.UserAgent != "TestClient/1.0" {
 		t.Errorf("expected User-Agent TestClient/1.0, got %s", ctx.UserAgent)

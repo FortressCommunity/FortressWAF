@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -115,12 +116,12 @@ func queryValues(rawQuery string) url.Values {
 	return values
 }
 
+// NewRequestContext resolves the client address without the Engine's
+// trusted-proxy list; use Engine.ClientIP when the allow list has been
+// configured. Client-supplied forwarded headers are never honoured here.
 func NewRequestContext(r *http.Request) *RequestContext {
-	realIP := r.Header.Get("X-Forwarded-For")
-	if realIP == "" {
-		realIP = r.Header.Get("X-Real-IP")
-	}
-	if realIP == "" {
+	realIP, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
 		realIP = r.RemoteAddr
 	}
 
@@ -216,6 +217,7 @@ type Engine struct {
 	perfMgmt     *PerformanceManager
 	learner      *LearningEngine
 	confScorer   *ConfidenceScorer
+	proxies      trustedProxy
 }
 
 // EngineConfig configures which inspectors the Engine should use.
@@ -469,7 +471,7 @@ func (e *Engine) finalDecision(ctx *RequestContext) *Decision {
 }
 
 func (e *Engine) InspectRequest(r *http.Request) (*Decision, error) {
-	ctx := NewRequestContext(r)
+	ctx := e.ContextFromRequest(r)
 
 	if e.devMode {
 		slog.Debug("request context created",
@@ -482,7 +484,7 @@ func (e *Engine) InspectRequest(r *http.Request) (*Decision, error) {
 }
 
 func (e *Engine) InspectContext(ctx context.Context, r *http.Request) (*Decision, error) {
-	rc := NewRequestContext(r)
+	rc := e.ContextFromRequest(r)
 	rc.Context = ctx
 	return e.Inspect(rc)
 }
@@ -560,6 +562,18 @@ func (e *Engine) Inspectors() []Inspector {
 	return result
 }
 
-func ContextFromRequest(r *http.Request) *RequestContext {
-	return NewRequestContext(r)
+// ContextFromRequest builds a RequestContext using the Engine's trusted-proxy
+// configuration, so deployments behind a reverse proxy still see the real
+// client while edge deployments ignore spoofed forwarded headers.
+func (e *Engine) ContextFromRequest(r *http.Request) *RequestContext {
+	ctx := NewRequestContext(r)
+	ctx.RealIP = e.ClientIP(r)
+	return ctx
+}
+
+// SetTrustedProxies configures which peer CIDRs may set forwarding headers.
+// Invalid CIDRs are returned so the caller can surface the misconfiguration.
+func (e *Engine) SetTrustedProxies(cidrs []string) []string {
+	e.proxies.SetTrustedProxies(cidrs)
+	return ParseTrustedProxies(cidrs)
 }

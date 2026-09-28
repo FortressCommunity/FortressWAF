@@ -82,13 +82,33 @@ Detection is measured, not assumed: the whole `ml-engine` training corpus
 | Tamper-evident audit log (hash-chained entries, admin API `/api/v1/audit`) | **stable** |
 | Next.js dashboard (overview, detection modules, audit log, compliance) | **stable** — reads the endpoints above |
 | SIEM export (Elasticsearch, Splunk HEC) | implemented, off by default |
-| Grafana dashboards (`deploy/monitoring/grafana/dashboards/*.json`) | **not verified** — definitions are bundled but were never rendered end to end |
+| Grafana dashboards (`deploy/monitoring/grafana/dashboards/*.json`) | **stable** — two dashboards (Overview, Security) provisioned and rendered against live Prometheus data; see caveat in [Known Limitations](#known-limitations) |
+| ML / compliance metrics in Grafana | **not available** — the exporter emits no such series, so the two dashboards that queried them were removed rather than left rendering empty panels |
 
 ### Management API
 
 The admin API (`/api/v1` on the admin port) exposes auth/login, health, status,
 config read/reload, sites, rules, compliance assessment, and the audit log. It
 requires a bearer token obtained from `POST /api/v1/auth/login`.
+
+Access controls, all verified live against the running stack:
+
+* **Keys are compared in constant time** (`crypto/subtle`) at login and on every
+  authenticated request, so response timing does not reveal a correct prefix.
+* **Failed logins are rate-limited.** Five wrong attempts per source address in
+  a minute lock that address out for fifteen minutes, returning `429` with
+  `Retry-After`. A locked-out caller is refused *before* the credential check,
+  so a valid key is not confirmed while the lock is active.
+* **No keys configured, no access.** The middleware fails closed (`503`) rather
+  than serving protected routes unauthenticated.
+* **`/auth/me` authenticates.** It used to reflect any bearer token back as an
+  admin identity; it now requires a configured key.
+* **The peer address is authoritative.** A client-supplied `X-Forwarded-For` is
+  ignored unless the peer is listed in `admin.trusted_proxies`. Without this,
+  per-IP rate limits, brute-force lockouts and bot scoring were all bypassable
+  with one header, and the audit log recorded the spoofed address.
+* **CORS is an allow list**, not `*`: only origins under
+  `admin.cors_origins` may read authenticated API responses from a browser.
 
 ---
 
@@ -119,11 +139,12 @@ stack (proxy + Postgres + ML sidecar + dashboard) instead:
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-> Verified in this sandbox: `go build`, `go vet`, `go test ./...`, and a live
-> smoke test of the binary. **The Docker stack was not** — this sandbox has
-> podman without a compose plugin, so the compose file was validated by
-> inspection and its healthchecks were checked against the binary, not by
-> `compose up`. Run it once on the presentation machine before the demo.
+> Verified end to end in this sandbox: `go build`, `go vet`, `go test ./...`,
+> a live smoke test of the binary, and a full `docker compose up` of the
+> proxy, Postgres, ML sidecar, dashboard, and monitoring stack — every service
+> reached a healthy state, the WAF blocked attack payloads through the stack,
+> and Grafana rendered real metrics. See [Demo scenario](#demo-scenario) and
+> [Known Limitations](#known-limitations).
 
 Minimal config (what `deploy/config.yaml` actually contains, abridged):
 
@@ -149,11 +170,45 @@ rce:     { enabled: true }
 ## Demo scenario
 
 A scripted walkthrough a reviewer can follow live. The protected site's upstream
-in `deploy/config.yaml` points at the dashboard container, so benign requests
-return a real page while attacks are blocked at the WAF. Running the binary on
-its own instead, benign requests answer **502** -- the WAF allowed them through
-and nothing is listening at the configured upstream. That 502 is the benign
-path; a blocked request answers 403 with a JSON body naming the rule.
+in `deploy/config.yaml` points at the intentionally vulnerable demo app built
+from `deploy/demo-app/` (github.com/daffainfo/vulnerable-web), so benign
+requests get a real page while its SQL injection, file inclusion and XSS
+payloads are blocked at the WAF. That container sits on its own `demo-net`
+bridge with `internal: true`: no route off the host, and no path to Postgres,
+the ML sidecar or the admin API. Running the binary on its own instead, benign
+requests answer **502** -- the WAF allowed them through and nothing is
+listening at the configured upstream. That 502 is the benign path; a blocked
+request answers 403 with a JSON body naming the rule.
+
+### Public deployment
+
+`deploy/docker-compose.yml` runs Caddy as the TLS edge and routes each host to
+its container; the WAF's own listeners are bound to loopback. The live instance
+is reachable at:
+
+| Host | What it serves | Credentials |
+| --- | --- | --- |
+| `fort.tkjt3yapera.my.id` | Dashboard (the WAF's own UI) | any email + `fortress-demo-admin` |
+| `admin-fort.tkjt3yapera.my.id` | Admin API the dashboard calls | `Authorization: Bearer fortress-demo-admin` |
+| `demo.tkjt3yapera.my.id` | Vulnerable demo app, behind the WAF | app login: `administrator` / `administrator` |
+| `grafana.tkjt3yapera.my.id` | Grafana, served around the WAF | `admin` / `admin` -- change it via `GRAFANA_PASSWORD` in `deploy/.env` |
+
+```bash
+curl -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36' \
+     https://demo.tkjt3yapera.my.id/                       # 200, the lab app
+curl -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36' \
+     "https://demo.tkjt3yapera.my.id/users/index.php?q=1'%20OR%20'1'='1"   # 403 SQLI016
+```
+
+The same walkthrough is available as a self-checking script: it asserts each
+expected rule (and that benign traffic is *not* blocked) and exits non-zero if
+anything regresses. Run it against the binary on :8080, or override the URLs
+for the compose stack, whose proxy is published on port 80.
+
+```bash
+./demo/exhibition-script.sh                              # binary: :8080 / :8443
+PROXY_URL=http://localhost ./demo/exhibition-script.sh   # compose: :80 / :8443
+```
 
 ```bash
 # A normal browser request must pass through to the backend.
@@ -188,6 +243,20 @@ Two things worth pointing out to an audience:
   has a false-positive test (`TestFalsePositive_*` in `tests/unit/`) that
   replays benign input — ordinary English containing SQL keywords, browser
   User-Agents, benign paths — and fails if any of it is blocked.
+
+To show blocked traffic as charts rather than curl output, bring up the
+monitoring stack alongside the main one and open Grafana at
+<http://localhost:3001> (admin/admin):
+
+```bash
+docker compose -f deploy/monitoring/docker-compose.monitoring.yml up -d
+```
+
+The "FortressWAF Overview" dashboard shows requests/sec, the allowed-vs-blocked
+split, and the block ratio; "FortressWAF Security" breaks the enforcement
+actions (blocked, monitored, challenged, rate-limited) out separately. Both
+refresh every 10 seconds, so payloads sent through the proxy appear on screen
+during the demo.
 
 ---
 
@@ -249,15 +318,27 @@ actually measured here, not marketing figures.
 
 ---
 
+## Security posture
+
+`govulncheck ./...` reports **0 vulnerabilities in code paths** (4 remain in
+required modules, none called) and `npm audit` reports **0** for the dashboard.
+Detection rates are replayed from the payload corpus in
+`tests/unit/payload_corpus_test.go`.
+
 ## Known limitations
 
 Stated plainly, because hiding them would be worse than having them:
 
 1. **The ML sidecar is not in the request path.** `internal/ml/client.go` and
-   `ml-engine/api/app.py` now agree on a request/response contract, but the
-   proxy never calls it — detection is entirely rule-based. The bundled model
-   is also untrained: `ml-engine` falls back to heuristic scoring. Treat the
-   ML component as scaffolding, not a working classifier.
+   `ml-engine/api/app.py` agree on a request/response contract (verified: the
+   Go request struct matches the FastAPI schema field for field, and both
+   endpoints answer on the running sidecar), but the proxy never calls it —
+   detection is entirely rule-based. The bundled model is also untrained:
+   `ml-engine` answers from heuristic scoring, and it mislabels payloads
+   (a SQLi string is returned as `command-injection` at ~8% confidence). The
+   sidecar starts and reports healthy in the docker stack, and its
+   `/v1/classify` and `/v1/inspect` endpoints work, but treat the ML component
+   as scaffolding, not a working classifier.
 2. **Compliance is verification, not enforcement.** The compliance module
    checks a subset of controls against live runtime state (is the WAF enabled?
    are the SQLi/XSS inspectors on? is the audit log actually recording?).
@@ -278,8 +359,13 @@ Stated plainly, because hiding them would be worse than having them:
    enterprise/community feature split that the code does not implement. Trust
    this README and `deploy/config.yaml` for what actually works; read `docs/`
    as design notes.
-8. **The Docker stack was validated by inspection, not execution** (no compose
-   runtime in the sandbox). Healthchecks were verified against the live binary.
+8. **The Docker stack runs, and only what it runs is claimed.** The stack
+   (proxy + Postgres + ML sidecar + dashboard) and the separate monitoring
+   stack (Prometheus + Grafana + Loki + Alertmanager) were both built and
+   started end to end; all healthchecks pass. Two caveats remain: Alertmanager
+   receivers point at a local sink (`http://127.0.0.1:5001`) because real
+   delivery needs SMTP/Slack credentials, and the monitoring stack is a
+   second `docker compose` file that must be brought up separately.
 9. **Untrained-model honesty:** detection rates in the feature table are
    measured against a payload corpus, which is a lab measurement — not proof
    of performance against a skilled attacker with bypass tooling.

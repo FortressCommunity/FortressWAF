@@ -19,7 +19,14 @@ type CredentialProtection struct {
 	leakedCreds     map[string]bool
 	hibpEnabled     bool
 	lockoutDuration time.Duration
-	maxAttempts     int
+	// window is how long a burst of auth attempts stays "current". A new
+	// attempt after a longer quiet period starts the count over.
+	window time.Duration
+	// loginPaths are the paths treated as authentication endpoints. Brute
+	// force only ever counts requests to these (or POSTs carrying a
+	// password); ordinary page and asset requests are never counted.
+	loginPaths  []string
+	maxAttempts int
 }
 
 type loginTracker struct {
@@ -48,11 +55,18 @@ func NewCredentialProtection(devMode bool, maxAttempts int, windowSec, blockDura
 	if len(paths) == 0 {
 		paths = []string{"/login", "/signin", "/auth", "/api/login"}
 	}
+	normalized := make([]string, 0, len(paths))
+	for _, p := range paths {
+		normalized = append(normalized, normalizeLoginPath(p))
+	}
 	if maxAttempts <= 0 {
 		maxAttempts = 5
 	}
 	if blockDurationSec <= 0 {
 		blockDurationSec = 3600
+	}
+	if windowSec <= 0 {
+		windowSec = 300
 	}
 	return &CredentialProtection{
 		devMode:         devMode,
@@ -62,8 +76,38 @@ func NewCredentialProtection(devMode bool, maxAttempts int, windowSec, blockDura
 		leakedCreds:     make(map[string]bool),
 		hibpEnabled:     false,
 		lockoutDuration: time.Duration(blockDurationSec) * time.Second,
+		window:          time.Duration(windowSec) * time.Second,
+		loginPaths:      normalized,
 		maxAttempts:     maxAttempts,
 	}
+}
+
+func normalizeLoginPath(path string) string {
+	return strings.TrimSuffix(strings.ToLower(path), "/")
+}
+
+// isAuthAttempt reports whether ctx is an authentication attempt, which is all
+// brute-force protection is meant to count. The previous implementation
+// counted every request from an address and then rate-limited the whole
+// address, so an ordinary browser - which fetches HTML, CSS and JS within the
+// same second - was blocked by CRED006 on its third request.
+func (c *CredentialProtection) isAuthAttempt(ctx *RequestContext) bool {
+	if ctx.Method != "POST" {
+		return false
+	}
+	if _, ok := ctx.FormParams["password"]; ok {
+		return true
+	}
+	if _, ok := ctx.QueryParams["password"]; ok {
+		return true
+	}
+	path := normalizeLoginPath(ctx.Path)
+	for _, p := range c.loginPaths {
+		if path == p {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *CredentialProtection) Name() string { return "credential_protection" }
@@ -228,7 +272,12 @@ func (c *CredentialProtection) detectPasswordSpray(ctx *RequestContext) *Decisio
 }
 
 func (c *CredentialProtection) detectBruteForce(ctx *RequestContext) *Decision {
+	if !c.isAuthAttempt(ctx) {
+		return nil
+	}
+
 	ip := ctx.RealIP
+	now := time.Now()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -238,15 +287,26 @@ func (c *CredentialProtection) detectBruteForce(ctx *RequestContext) *Decision {
 		c.bruteForce[ip] = &bruteForceTracker{
 			attempts:  1,
 			backoff:   1 * time.Second,
-			nextTry:   time.Now(),
-			firstSeen: time.Now(),
+			nextTry:   now,
+			firstSeen: now,
 		}
+		return nil
+	}
+
+	// A quiet period longer than the configured window starts a fresh burst,
+	// so a user who mistyped a password earlier is not still locked out for
+	// something they did hours ago.
+	if now.Sub(tracker.firstSeen) > c.window {
+		tracker.attempts = 1
+		tracker.backoff = 1 * time.Second
+		tracker.nextTry = now
+		tracker.firstSeen = now
 		return nil
 	}
 
 	tracker.attempts++
 
-	if time.Now().Before(tracker.nextTry) {
+	if now.Before(tracker.nextTry) {
 		return &Decision{
 			Action:   ActionBlock,
 			RuleID:   "CRED006",
@@ -268,7 +328,7 @@ func (c *CredentialProtection) detectBruteForce(ctx *RequestContext) *Decision {
 		tracker.backoff = 1 * time.Second
 	}
 
-	tracker.nextTry = time.Now().Add(tracker.backoff)
+	tracker.nextTry = now.Add(tracker.backoff)
 
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -36,13 +37,18 @@ type TLSConfig struct {
 }
 
 type AdminConfig struct {
-	Port     int      `yaml:"port"`
-	Enabled  bool     `yaml:"enabled"`
-	MTLS     bool     `yaml:"mtls"`
-	CACert   string   `yaml:"ca_cert"`
-	CertFile string   `yaml:"cert_file"`
-	KeyFile  string   `yaml:"key_file"`
-	APIKeys  []string `yaml:"api_keys"`
+	Port        int      `yaml:"port"`
+	Enabled     bool     `yaml:"enabled"`
+	MTLS        bool     `yaml:"mtls"`
+	CACert      string   `yaml:"ca_cert"`
+	CertFile    string   `yaml:"cert_file"`
+	KeyFile     string   `yaml:"key_file"`
+	APIKeys     []string `yaml:"api_keys"`
+	CORSOrigins []string `yaml:"cors_origins"`
+	// CIDRs whose X-Forwarded-For is trusted. Empty means the proxy is the
+	// edge: client-supplied forwarded headers are ignored and the TCP peer
+	// address is authoritative.
+	TrustedProxies []string `yaml:"trusted_proxies"`
 }
 
 type RedisConfig struct {
@@ -77,16 +83,62 @@ type SiteRuleOverride struct {
 }
 
 type SiteConfig struct {
-	Name          string                      `yaml:"name"`
-	Domains       []string                    `yaml:"domains"`
-	Upstream      string                      `yaml:"upstream"`
-	Port          int                         `yaml:"port"`
-	TLS           bool                        `yaml:"tls"`
-	CertFile      string                      `yaml:"cert_file"`
-	KeyFile       string                      `yaml:"key_file"`
-	RateLimit     *RateLimitSiteConfig        `yaml:"rate_limit,omitempty"`
-	WAFEnabled    bool                        `yaml:"waf_enabled"`
+	Name       string               `yaml:"name"`
+	Domains    []string             `yaml:"domains"`
+	Upstream   string               `yaml:"upstream"`
+	Port       int                  `yaml:"port"`
+	TLS        bool                 `yaml:"tls"`
+	CertFile   string               `yaml:"cert_file"`
+	KeyFile    string               `yaml:"key_file"`
+	RateLimit  *RateLimitSiteConfig `yaml:"rate_limit,omitempty"`
+	WAFEnabled bool                 `yaml:"waf_enabled"`
+	// Path prefixes that skip inspection entirely. This is for sites that
+	// deliberately expose what the built-in rules block: the demo lab app's
+	// /administrator panel trips the sensitive-path rule, and the whole point
+	// of that host is to expose the labs. Anything listed here is forwarded
+	// uninspected, so treat it as "not protected" and keep it as narrow as
+	// possible.
+	ExcludePaths  []string                    `yaml:"exclude_paths,omitempty"`
 	RuleOverrides map[string]SiteRuleOverride `yaml:"rule_overrides,omitempty"`
+}
+
+// ExcludesPath reports whether path was listed in the site's exclude_paths.
+// An entry matches the path itself or anything below it, so "/administrator"
+// covers "/administrator/index.php" but not "/administratorX". Matching stays
+// case-sensitive on purpose: URL paths are case-sensitive, and folding case
+// here would exempt more than the operator wrote down.
+func (s *SiteConfig) ExcludesPath(path string) bool {
+	// The proxy forwards the raw path, so a path the upstream will normalize
+	// into something else is never excluded. Without this, "GET
+	// /administrator/../users/index.php?q=<payload>" would match the exempt
+	// prefix here and reach /users/index.php uninspected.
+	if hasDotDotSegment(path) {
+		return false
+	}
+	// Clean also folds the trailing slash and duplicate slashes that the
+	// upstream collapses, so "/administrator/" matches an "/administrator"
+	// entry instead of being silently inspected.
+	cleaned := pathpkg.Clean(path)
+
+	for _, entry := range s.ExcludePaths {
+		if entry == "/" {
+			return true
+		}
+		entry = strings.TrimSuffix(entry, "/")
+		if entry != "" && (cleaned == entry || strings.HasPrefix(cleaned, entry+"/")) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDotDotSegment(path string) bool {
+	for _, segment := range strings.Split(path, "/") {
+		if segment == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 type RateLimitSiteConfig struct {
@@ -618,6 +670,11 @@ func (c *Config) Validate() error {
 		}
 		if site.Upstream == "" {
 			return fmt.Errorf("site[%d] %q: upstream is required", i, site.Name)
+		}
+		for j, p := range site.ExcludePaths {
+			if !strings.HasPrefix(p, "/") {
+				return fmt.Errorf("site[%d] %q: exclude_paths[%d] %q must start with %q", i, site.Name, j, p, "/")
+			}
 		}
 	}
 

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/FortressWAF/FortressWAF/internal/config"
 )
@@ -55,7 +56,7 @@ func TestHandleAuthLogin_NoAPIKeys_Returns503(t *testing.T) {
 	cfgMgr, cleanup := writeTestConfig(t, nil)
 	defer cleanup()
 
-	rec := postLogin(t, handleAuthLogin(cfgMgr), `{"email":"admin@example.com","password":"x"}`)
+	rec := postLogin(t, handleAuthLogin(cfgMgr, newLoginLimiter(5, time.Minute, time.Minute)), `{"email":"admin@example.com","password":"x"}`)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 (credentials not configured), got %d: %s", rec.Code, rec.Body.String())
@@ -73,7 +74,7 @@ func TestHandleAuthLogin_ValidCredentials_ReturnsToken(t *testing.T) {
 	cfgMgr, cleanup := writeTestConfig(t, []string{"demo-admin-key"})
 	defer cleanup()
 
-	rec := postLogin(t, handleAuthLogin(cfgMgr), `{"email":"admin@example.com","password":"demo-admin-key"}`)
+	rec := postLogin(t, handleAuthLogin(cfgMgr, newLoginLimiter(5, time.Minute, time.Minute)), `{"email":"admin@example.com","password":"demo-admin-key"}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -93,7 +94,7 @@ func TestHandleAuthLogin_InvalidCredentials_Returns401(t *testing.T) {
 	cfgMgr, cleanup := writeTestConfig(t, []string{"demo-admin-key"})
 	defer cleanup()
 
-	rec := postLogin(t, handleAuthLogin(cfgMgr), `{"email":"admin@example.com","password":"wrong"}`)
+	rec := postLogin(t, handleAuthLogin(cfgMgr, newLoginLimiter(5, time.Minute, time.Minute)), `{"email":"admin@example.com","password":"wrong"}`)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
@@ -104,9 +105,188 @@ func TestHandleAuthLogin_MalformedBody_Returns400(t *testing.T) {
 	cfgMgr, cleanup := writeTestConfig(t, []string{"demo-admin-key"})
 	defer cleanup()
 
-	rec := postLogin(t, handleAuthLogin(cfgMgr), `{not json`)
+	rec := postLogin(t, handleAuthLogin(cfgMgr, newLoginLimiter(5, time.Minute, time.Minute)), `{not json`)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// /auth/me used to accept any bearer token and reflect it back as an admin
+// identity; it must reject tokens that are not configured keys.
+func TestHandleAuthMe_InvalidToken_Returns401(t *testing.T) {
+	cfgMgr, cleanup := writeTestConfig(t, []string{"demo-admin-key"})
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	req.Header.Set("Authorization", "Bearer totally-fake-token")
+	rec := httptest.NewRecorder()
+	handleAuthMe(cfgMgr).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for a bogus token, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAuthMe_ValidToken_Returns200(t *testing.T) {
+	cfgMgr, cleanup := writeTestConfig(t, []string{"demo-admin-key"})
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	req.Header.Set("Authorization", "Bearer demo-admin-key")
+	rec := httptest.NewRecorder()
+	handleAuthMe(cfgMgr).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A key that shares a prefix with the real key must not be accepted.
+func TestValidAPIKey_RejectsPartialKey(t *testing.T) {
+	if validAPIKey("demo-admin", []string{"demo-admin-key"}) {
+		t.Fatal("prefix of a valid key was accepted")
+	}
+	if validAPIKey("demo-admin-key-extra", []string{"demo-admin-key"}) {
+		t.Fatal("extension of a valid key was accepted")
+	}
+	if validAPIKey("demo-admin-key", nil) {
+		t.Fatal("key accepted when no keys are configured")
+	}
+}
+
+// With no keys configured the middleware must deny, not serve the handler.
+func TestAdminAuthMiddleware_NoKeys_FailsClosed(t *testing.T) {
+	cfgMgr, cleanup := writeTestConfig(t, nil)
+	defer cleanup()
+
+	called := false
+	mw := adminAuthMiddleware(cfgMgr)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer anything")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if called {
+		t.Fatal("protected handler was called with no keys configured")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when keys are unset, got %d", rec.Code)
+	}
+}
+
+func TestAdminAuthMiddleware_InvalidKey_Forbidden(t *testing.T) {
+	cfgMgr, cleanup := writeTestConfig(t, []string{"demo-admin-key"})
+	defer cleanup()
+
+	called := false
+	mw := adminAuthMiddleware(cfgMgr)
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer wrong-key")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if called {
+		t.Fatal("protected handler was called with an invalid key")
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+// CORS must not echo an unconfigured origin back.
+func TestCORSMiddleware_UnlistedOrigin_NotAllowed(t *testing.T) {
+	cfgMgr, cleanup := writeTestConfig(t, []string{"demo-admin-key"})
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+	req.Header.Set("Origin", "http://evil.example.com")
+	rec := httptest.NewRecorder()
+
+	corsMiddleware(cfgMgr)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("unlisted origin was allowed: %q", got)
+	}
+}
+
+func TestCORSMiddleware_ListedOrigin_Allowed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	cfg := "sites:\n  - {name: test, domains: [localhost], upstream: http://127.0.0.1:1, waf_enabled: true}\n" +
+		"admin:\n  enabled: true\n  port: 8443\n  api_keys: [k]\n  cors_origins: [http://localhost:3000]\n"
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfgMgr, err := config.NewManager(path)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	defer cfgMgr.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	rec := httptest.NewRecorder()
+	corsMiddleware(cfgMgr)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:3000" {
+		t.Fatalf("expected listed origin echoed, got %q", got)
+	}
+}
+
+// Preflight must be answered for API paths that only register GET, otherwise
+// the browser blocks the real request.
+func TestPreflight_AllowedOrigin_Returns204WithCORSHeaders(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	cfg := "sites:\n  - {name: test, domains: [localhost], upstream: http://127.0.0.1:1, waf_enabled: true}\n" +
+		"admin:\n  enabled: true\n  port: 8443\n  api_keys: [k]\n  cors_origins: [http://localhost:3000]\n"
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfgMgr, err := config.NewManager(path)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	defer cfgMgr.Close()
+
+	router := newAdminRouter(cfgMgr, nil, nil, nil, 8443)
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/status", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 preflight, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:3000" {
+		t.Fatalf("expected ACAO for listed origin, got %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, "Authorization") {
+		t.Fatalf("preflight must allow the Authorization header, got %q", got)
+	}
+}
+
+func TestPreflight_UnlistedOrigin_NoAllowHeaders(t *testing.T) {
+	cfgMgr, cleanup := writeTestConfig(t, []string{"k"})
+	defer cleanup()
+
+	router := newAdminRouter(cfgMgr, nil, nil, nil, 8443)
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/audit", nil)
+	req.Header.Set("Origin", "http://evil.example.com")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("unlisted origin got ACAO %q", got)
 	}
 }

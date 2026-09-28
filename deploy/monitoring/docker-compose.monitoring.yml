@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   prometheus:
     image: prom/prometheus:v2.49.1
@@ -16,7 +14,7 @@ services:
       - ./prometheus-rules:/etc/prometheus/rules:ro
       - prometheus-data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     restart: unless-stopped
     networks:
       - monitoring
@@ -32,7 +30,7 @@ services:
       - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager-data:/alertmanager
     ports:
-      - "9093:9093"
+      - "127.0.0.1:9093:9093"
     restart: unless-stopped
     networks:
       - monitoring
@@ -53,10 +51,13 @@ services:
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     restart: unless-stopped
     networks:
       - monitoring
+      # Caddy reaches Grafana by container name to serve
+      # grafana.tkjt3yapera.my.id, so it has to sit on the same bridge.
+      - fortress-net
 
   loki:
     image: grafana/loki:2.9.4
@@ -65,7 +66,7 @@ services:
     volumes:
       - loki-data:/loki
     ports:
-      - "3100:3100"
+      - "127.0.0.1:3100:3100"
     restart: unless-stopped
     networks:
       - monitoring
@@ -81,15 +82,6 @@ services:
     networks:
       - monitoring
 
-  alertmanager-ui:
-    image: prom/alertmanager:v0.27.0
-    container_name: alertmanager-ui
-    command: --alertmanager.url=http://alertmanager:9093
-    ports:
-      - "9094:9094"
-    restart: unless-stopped
-    networks:
-      - monitoring
 
 networks:
   monitoring:

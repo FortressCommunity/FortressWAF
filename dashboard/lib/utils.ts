@@ -30,54 +30,17 @@ export function formatNumber(num: number): string {
   return num.toString()
 }
 
-export function getSeverityColor(severity: string): string {
-  const map: Record<string, string> = {
-    critical: 'text-red-500 bg-red-500/10 border-red-500/20',
-    high: 'text-orange-500 bg-orange-500/10 border-orange-500/20',
-    medium: 'text-yellow-500 bg-yellow-500/10 border-yellow-500/20',
-    low: 'text-blue-500 bg-blue-500/10 border-blue-500/20',
-    info: 'text-green-500 bg-green-500/10 border-green-500/20',
-  }
-  return map[severity.toLowerCase()] || map.info
-}
-
-export function getAttackColor(action: string): string {
-  const map: Record<string, string> = {
-    blocked: 'text-red-500',
-    allowed: 'text-green-500',
-    challenged: 'text-yellow-500',
-    logged: 'text-blue-500',
-  }
-  return map[action.toLowerCase()] || 'text-muted-foreground'
-}
-
-export function getStatusColor(status: string): string {
-  const map: Record<string, string> = {
-    online: 'text-green-500',
-    offline: 'text-red-500',
-    degraded: 'text-yellow-500',
-    enabled: 'text-green-500',
-    disabled: 'text-muted-foreground',
-    active: 'text-green-500',
-    inactive: 'text-muted-foreground',
-  }
-  return map[status.toLowerCase()] || 'text-muted-foreground'
-}
-
-export function getStatusDot(status: string): string {
-  const map: Record<string, string> = {
-    online: 'bg-green-500',
-    offline: 'bg-red-500',
-    degraded: 'bg-yellow-500',
-    enabled: 'bg-green-500',
-    disabled: 'bg-gray-400',
-    active: 'bg-green-500',
-    testing: 'bg-yellow-500',
-    draft: 'bg-gray-400',
-    deployed: 'bg-green-500',
-    expired: 'bg-red-500',
-  }
-  return map[status.toLowerCase()] || 'bg-gray-400'
+// Go sends uptime as a Duration string ("1h37m33.943618816s") which overflows
+// a stat card. Seconds are reshaped here into a fixed-width, scannable value.
+export function formatDuration(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds))
+  const d = Math.floor(s / 86400)
+  const h = Math.floor((s % 86400) / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  if (d > 0) return `${d}d ${h}h`
+  if (h > 0) return `${h}h ${m}m`
+  if (m > 0) return `${m}m ${s % 60}s`
+  return `${s}s`
 }
 
 export function classNames(...classes: (string | boolean | undefined | null)[]): string {

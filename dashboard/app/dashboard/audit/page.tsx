@@ -8,42 +8,20 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Skeleton } from '@/components/ui/skeleton'
-import { api, ApiError } from '@/lib/api'
+import { api } from '@/lib/api'
+import { usePolling } from '@/lib/use-polling'
 import { formatDate } from '@/lib/utils'
-import type { AuditEntry } from '@/types'
+import type { AuditEntry, AuditResponse } from '@/types'
 
 export default function AuditPage() {
-  const [entries, setEntries] = React.useState<AuditEntry[]>([])
-  const [total, setTotal] = React.useState(0)
-  const [integrity, setIntegrity] = React.useState<boolean | null>(null)
+  const { data, loading, error, reload } = usePolling<AuditResponse>(() => api.audit(), 5_000)
   const [filter, setFilter] = React.useState('')
-  const [loading, setLoading] = React.useState(true)
-  const [error, setError] = React.useState<string | null>(null)
 
-  const load = React.useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const audit = await api.audit()
-      setEntries(audit.entries)
-      setTotal(audit.total)
-      setIntegrity(audit.integrity.valid)
-    } catch (err) {
-      setError(
-        err instanceof ApiError
-          ? `${err.message} (HTTP ${err.status})`
-          : err instanceof Error ? err.message : 'Unknown error',
-      )
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  React.useEffect(() => {
-    load()
-    const id = setInterval(load, 5000)
-    return () => clearInterval(id)
-  }, [load])
+  // Memoized so the derived array keeps its identity between polls and the
+  // filter below does not recompute on every render.
+  const entries = React.useMemo(() => data?.entries ?? [], [data])
+  const total = data?.total ?? 0
+  const integrity = data?.integrity?.valid ?? null
 
   const filtered = React.useMemo(() => {
     const q = filter.trim().toLowerCase()
@@ -63,12 +41,12 @@ export default function AuditPage() {
   if (error) {
     return (
       <div className="space-y-6">
-        <h1 className="text-2xl font-black uppercase tracking-tight text-foreground">Audit log</h1>
-        <Card className="border-2 border-destructive shadow-brutal-sm">
+        <h1 className="text-2xl font-semibold text-foreground">Audit log</h1>
+        <Card className="border border-destructive/40">
           <CardContent className="flex flex-col items-center justify-center gap-3 py-12 text-center">
             <ShieldAlert className="w-10 h-10 text-destructive" />
-            <p className="text-sm text-muted-foreground font-medium">{error}</p>
-            <Button variant="outline" onClick={load}>Try again</Button>
+            <p className="text-sm text-muted-foreground">{error}</p>
+            <Button variant="outline" onClick={() => reload()}>Try again</Button>
           </CardContent>
         </Card>
       </div>
@@ -79,14 +57,14 @@ export default function AuditPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-black uppercase tracking-tight text-foreground">Audit log</h1>
-          <p className="text-sm text-muted-foreground font-bold">
+          <h1 className="text-2xl font-semibold text-foreground">Audit log</h1>
+          <p className="text-sm text-muted-foreground">
             {total} {total === 1 ? 'entry' : 'entries'} · hash-chained
           </p>
         </div>
         <Badge
           variant="outline"
-          className={`border-2 font-black uppercase ${integrity === null ? 'border-foreground/30 text-muted-foreground' : integrity ? 'border-primary text-primary' : 'border-destructive text-destructive'}`}
+        className={`font-medium ${integrity === null ? 'text-muted-foreground' : integrity ? 'border-primary text-primary' : 'border-destructive text-destructive'}`}
         >
           <Fingerprint className="w-3.5 h-3.5 mr-1.5" />
           {integrity === null ? 'unverified' : integrity ? 'chain intact' : 'chain broken'}
@@ -97,20 +75,20 @@ export default function AuditPage() {
         placeholder="Filter by rule, IP, path or action..."
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
-        className="max-w-sm border-2 border-foreground"
+        className="max-w-sm"
       />
 
       {loading && entries.length === 0 ? (
         <div className="space-y-2">
           {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-12 border-2 border-foreground/20" />
+            <Skeleton key={i} className="h-12" />
           ))}
         </div>
       ) : filtered.length === 0 ? (
-        <Card className="border-2 border-dashed border-foreground/40">
+        <Card className="border border-dashed">
           <CardContent className="flex flex-col items-center justify-center gap-2 py-12 text-center">
             <ShieldAlert className="w-8 h-8 text-muted-foreground" />
-            <p className="text-sm font-bold text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               {entries.length === 0
                 ? 'No audit entries yet. Blocked requests are recorded here.'
                 : 'No entries match this filter.'}
@@ -118,9 +96,9 @@ export default function AuditPage() {
           </CardContent>
         </Card>
       ) : (
-        <Card className="border-2 border-foreground shadow-brutal">
+        <Card>
           <CardHeader>
-            <CardTitle className="text-sm font-black uppercase tracking-tight">
+            <CardTitle className="text-sm font-semibold">
               {filtered.length} shown
             </CardTitle>
           </CardHeader>
@@ -128,25 +106,25 @@ export default function AuditPage() {
             <div className="overflow-x-auto scrollbar-thin">
               <Table>
                 <TableHeader>
-                  <TableRow className="border-foreground">
-                    <TableHead className="font-black uppercase text-xs">Time</TableHead>
-                    <TableHead className="font-black uppercase text-xs">Result</TableHead>
-                    <TableHead className="font-black uppercase text-xs">Rule</TableHead>
-                    <TableHead className="font-black uppercase text-xs">Path</TableHead>
-                    <TableHead className="font-black uppercase text-xs">IP</TableHead>
-                    <TableHead className="font-black uppercase text-xs">Chain</TableHead>
+                  <TableRow>
+                    <TableHead>Time</TableHead>
+                    <TableHead>Result</TableHead>
+                    <TableHead>Rule</TableHead>
+                    <TableHead>Path</TableHead>
+                    <TableHead>IP</TableHead>
+                    <TableHead>Chain</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filtered.slice(0, 50).map((ent) => (
-                    <TableRow key={ent.id} className="border-foreground/30">
+                    <TableRow key={ent.id}>
                       <TableCell className="text-xs font-mono text-muted-foreground whitespace-nowrap">
                         {formatDate(ent.timestamp)}
                       </TableCell>
                       <TableCell>
                         <Badge
                           variant="outline"
-                          className={`border-2 font-black text-xs ${ent.result === 'blocked' ? 'border-destructive text-destructive' : 'border-foreground/40 text-muted-foreground'}`}
+                          className={`font-medium text-xs ${ent.result === 'blocked' ? 'border-destructive text-destructive' : 'text-muted-foreground'}`}
                         >
                           {ent.result}
                         </Badge>
@@ -169,7 +147,7 @@ export default function AuditPage() {
               </Table>
             </div>
             {filtered.length > 50 && (
-              <p className="text-xs text-muted-foreground font-bold mt-3">
+              <p className="text-xs text-muted-foreground mt-3">
                 Showing the 50 most recent of {filtered.length} matches.
               </p>
             )}
