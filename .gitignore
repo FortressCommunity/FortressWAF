@@ -189,7 +189,8 @@ id_dsa*
 *.retry
 
 # Benchmark output
-benchmark.txt
+# benchmark raw output is now committed alongside BENCHMARK.md
+# benchmark.txt
 
 # Build artifacts
 /ctl
