@@ -296,25 +296,39 @@ features.
 
 ## Performance
 
-Measured on the development laptop (Intel i5-7200U, 2 cores / 4 threads) with
-the shipped inspector set. Reproduce with:
+Re-measured on the reference build host (DO-Regular, 4 vCPU, 8 GB RAM, Linux
+5.15) with the shipped inspector set, using the same command the
+`benchmark.yml` CI workflow runs:
 
 ```bash
-go test -bench=. -benchtime=200x -run=^$ ./tests/unit/
+go test -bench=. -benchmem -run=^$ ./tests/unit/ -count=5
 ```
+
+Full run: 15 benchmarks, 75 runs, 134.3s, all passing. Complete raw output and
+the per-benchmark analysis live in [BENCHMARK.md](BENCHMARK.md).
 
 | Benchmark | Result | Per-core rate |
 |---|---|---|
-| Single payload, SQLi | ~320 ns/op | ~3.1M inspections/s |
-| Single payload, XSS | ~257 ns/op | ~3.9M inspections/s |
-| Single payload, RCE | ~224 ns/op | ~4.5M inspections/s |
-| Full engine, benign request | ~181 µs/op | ~5,500 req/s |
-| Full engine, attack request | ~195 µs/op | ~5,100 req/s |
-| RequestContext creation | ~14 µs/op | ~70k ctx/s |
+| Single payload, RCE | ~311 ns/op (144 B, 1 alloc) | ~3.2M inspections/s |
+| Single payload, XSS | ~329 ns/op (144 B, 1 alloc) | ~3.0M inspections/s |
+| Single payload, SQLi | ~354 ns/op (144 B, 1 alloc) | ~2.8M inspections/s |
+| Protocol detection | ~16.3 µs/op (7.7 KB, 48 allocs) | ~61k/s |
+| RequestContext creation | ~20.3 µs/op (7.7 KB, 81 allocs) | ~49k ctx/s |
+| Single user agent, bot | ~31.8 µs/op (938 B, 3 allocs) | ~31k/s |
+| SQLi / RCE / XSS detection | ~35–37 µs/op (17 KB, ~160 allocs) | ~28k/s |
+| Full engine, benign request | ~394 µs/op (110 KB, 25 allocs) | ~2,500 req/s |
+| Full engine, attack request | ~404 µs/op (150 KB, 25 allocs) | ~2,500 req/s |
+| DDoS protection | ~267 µs/op (255 KB, ~30 allocs) | ~3,700 req/s |
+| Bot detection | ~618 µs/op (14 KB, 87 allocs) | ~1,600/s |
+| Full engine inspection (batch) | ~1.77 ms/op (542 KB, 149 allocs) | — |
 
-Latency overhead per request with the full engine is roughly 0.2 ms on this
-hardware. Server-grade CPUs will be faster; the numbers above are the ones
-actually measured here, not marketing figures.
+Latency overhead per request with the full engine is roughly **0.4 ms** on this
+hardware, i.e. ~10k req/s of pure inspection headroom across the 4 vCPU. The
+single-payload hot path is essentially allocation-free (1 alloc, 144 B), so the
+per-request cost is dominated by the full-pipeline allocs (~25 for a whole
+request, ~160 when a detector matches). These are the numbers actually measured
+on this host, not marketing figures; absolute throughput will differ on
+production hardware.
 
 ---
 
@@ -376,6 +390,7 @@ Stated plainly, because hiding them would be worse than having them:
 
 | Document | Contents |
 |---|---|
+| [BENCHMARK.md](BENCHMARK.md) | Current benchmark results, environment, and analysis |
 | [Getting Started](docs/getting-started.md) | Installation and first config |
 | [Architecture](docs/architecture.md) | Pipeline details and deployment modes |
 | [Configuration](docs/configuration.md) | Full YAML reference |
