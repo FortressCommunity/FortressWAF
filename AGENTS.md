@@ -265,6 +265,10 @@ curl -s -o /dev/null -w '%{http_code}\n' \
   not features.
 - **Do not add `--allow` to silence a lint.** Fix the lint, or (for a
   deliberately Go-shaped construction) document why in the crate's `lib.rs`.
+- **Do not build a client or clone the whole `Config` per request.** The proxy
+  shares one pooled upstream client on `AppState`, and `Manager::get()` returns
+  a cheap `Arc<Config>`. Doing either per request hangs the proxy under load —
+  it was a real bug (see `rust/DEVIATIONS.md` §14).
 
 ---
 
