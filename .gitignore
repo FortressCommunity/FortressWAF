@@ -207,3 +207,6 @@ ml-engine/models/persisted/
 .agents/
 skills-lock.json
 PLAN.md
+
+# Runtime config (a writable copy the WAF mutates; seeded by scripts/deploy.sh)
+deploy/runtime/

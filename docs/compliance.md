@@ -1,5 +1,10 @@
 # Compliance Reference
 
+> **Design notes — not the source of truth.** This document describes the
+> intended design. For what the code actually does today, read the
+> [README](README.md) and `deploy/config.yaml`. Where they disagree, the
+> README and the code win.
+
 FortressWAF includes security controls that may help satisfy certain compliance requirements. This document maps available features to common compliance frameworks for reference.
 
 **Important:** Compliance requires organization-wide policies, processes, and controls. A WAF alone cannot make you compliant with any framework. This document is a reference for auditors and security teams evaluating FortressWAF.

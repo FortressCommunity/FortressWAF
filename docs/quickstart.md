@@ -1,5 +1,10 @@
 # Quick Start Guide
 
+> **Design notes — not the source of truth.** This document describes the
+> intended design. For what the code actually does today, read the
+> [README](README.md) and `deploy/config.yaml`. Where they disagree, the
+> README and the code win.
+
 This guide will walk you through deploying FortressWAF using Docker Compose in under 5 minutes. By the end of this guide, you'll have a fully functional WAF protecting a sample application.
 
 ## Prerequisites

@@ -1,5 +1,10 @@
 # Inspection Pipeline
 
+> **Design notes — not the source of truth.** This document describes the
+> intended design. For what the code actually does today, read the
+> [README](../README.md) and `deploy/config.yaml`. Where they disagree, the
+> README and the code win.
+
 FortressWAF processes requests through a multi-stage inspection pipeline. Each stage performs specific security checks and contributes to the final decision. This document details the complete pipeline architecture and processing flow.
 
 ## Pipeline Overview

@@ -298,25 +298,44 @@ class TestModelStatusEndpoint:
 
 
 class TestRetrainEndpoint:
-    def test_retrain_default(self):
-        response = client.post("/v1/model/retrain")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "success"
-        assert "message" in data
-        assert "timestamp" in data
+    # Retraining now runs against the on-disk corpus and only adopts a model
+    # that scores at least as well as the incumbent. On a corpus too small to
+    # judge, it refuses (422) rather than risk a worse model. The random-data
+    # placeholder moved to /v1/model/retrain-legacy-placeholder.
 
-    def test_retrain_with_config(self):
-        payload = {"learning_rate": 0.05, "n_estimators": 50, "batch_size": 16, "force_full_retrain": True}
-        response = client.post("/v1/model/retrain", json=payload)
+    def test_retrain_refuses_on_small_corpus(self, tmp_path, monkeypatch):
+        # Point the loader at an empty dir: too few samples to train.
+        import api.app as appmod
+        monkeypatch.setattr(appmod, "CORPUS_DIR", str(tmp_path / "empty"), raising=False)
+        response = client.post("/v1/model/retrain")
+        assert response.status_code == 422
+        assert "samples" in response.json()["error"]
+
+    def test_training_status_reports_corpus(self):
+        response = client.get("/v1/model/training-status")
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "success"
+        assert "total_samples" in data
+        assert "ready_to_train" in data
+        assert "min_required" in data
 
     def test_retrain_invalid_config(self):
         payload = {"learning_rate": -1}
         response = client.post("/v1/model/retrain", json=payload)
         assert response.status_code == 422
+
+    def test_placeholder_retrain_refused_by_default(self):
+        response = client.post("/v1/model/retrain-legacy-placeholder")
+        assert response.status_code == 501
+
+    def test_body_size_limit_rejects_oversized(self):
+        # Content-Length past the cap is refused before FastAPI parses it.
+        response = client.post(
+            "/v1/classify",
+            content=b"{}",
+            headers={"Content-Length": str(20 * 1024 * 1024)},
+        )
+        assert response.status_code == 413
 
 
 class TestErrorHandling:

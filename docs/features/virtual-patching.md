@@ -1,5 +1,10 @@
 # Virtual Patching
 
+> **Design notes — not the source of truth.** This document describes the
+> intended design. For what the code actually does today, read the
+> [README](../README.md) and `deploy/config.yaml`. Where they disagree, the
+> README and the code win.
+
 Virtual patching provides a way to protect applications from vulnerabilities without modifying application code. This is essential for addressing newly discovered CVEs, legacy systems, and third-party applications.
 
 ## Virtual Patch Overview

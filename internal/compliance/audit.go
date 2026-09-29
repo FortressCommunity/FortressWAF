@@ -18,9 +18,22 @@ type AuditEntry struct {
 	Resource   string    `json:"resource"`
 	ResourceID string    `json:"resource_id"`
 	Result     string    `json:"result"`
-	Metadata   string    `json:"metadata,omitempty"`
-	Hash       string    `json:"hash"`
-	PrevHash   string    `json:"prev_hash"`
+	// Metadata is always serialized (even empty) so a client never receives a
+	// missing field and crashes on it; the console groups entries by the rule
+	// id carried here.
+	Metadata string `json:"metadata"`
+	Hash     string `json:"hash"`
+	PrevHash string `json:"prev_hash"`
+
+	// Request forensics. These are recorded for every inspected request so the
+	// console can show what a client actually sent, not just the outcome.
+	Method     string            `json:"method,omitempty"`
+	Path       string            `json:"path,omitempty"`
+	StatusCode int               `json:"status_code,omitempty"`
+	UserAgent  string            `json:"user_agent,omitempty"`
+	Browser    string            `json:"browser,omitempty"` // parsed: "Chrome 120 on Android 14"
+	Device     string            `json:"device,omitempty"`  // desktop | mobile | tablet | bot
+	Headers    map[string]string `json:"headers,omitempty"`
 }
 
 type AuditLog struct {
@@ -130,10 +143,11 @@ func (al *AuditLog) VerifyIntegrity() (bool, error) {
 // the previous entry's hash. The same function runs on append and on
 // verification, so any later edit to a field changes the result.
 func computeEntryHash(prevHash string, entry AuditEntry) string {
-	data := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s|%s",
+	data := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%d|%s|%s",
 		entry.ID, entry.Timestamp.Format(time.RFC3339Nano),
 		entry.ActorID, entry.ActorType, entry.ActorIP,
-		entry.Action, entry.Resource, entry.ResourceID, entry.Result)
+		entry.Action, entry.Resource, entry.ResourceID, entry.Result,
+		entry.Method, entry.Path, entry.StatusCode, entry.UserAgent, entry.Metadata)
 
 	hash := sha256.New()
 	hash.Write([]byte(prevHash + data))

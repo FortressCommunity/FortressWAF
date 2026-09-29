@@ -1,5 +1,10 @@
 # Rule Engine Deep Dive
 
+> **Design notes — not the source of truth.** This document describes the
+> intended design. For what the code actually does today, read the
+> [README](../README.md) and `deploy/config.yaml`. Where they disagree, the
+> README and the code win.
+
 FortressWAF's rule engine is a powerful, flexible system that allows you to define custom security policies using a domain-specific language (DSL). This document provides comprehensive documentation for writing rules.
 
 ## Rule Structure

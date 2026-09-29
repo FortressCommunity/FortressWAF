@@ -24,8 +24,11 @@ func writeTestConfig(t *testing.T, apiKeys []string) (*config.Manager, func()) {
 	var b strings.Builder
 	b.WriteString("sites:\n  - name: test\n    domains: [localhost]\n    upstream: http://127.0.0.1:18081\n    waf_enabled: true\n")
 	b.WriteString("admin:\n  enabled: true\n  port: 8443\n")
-	for _, k := range apiKeys {
-		b.WriteString("  api_keys:\n    - " + k + "\n")
+	if len(apiKeys) > 0 {
+		b.WriteString("  api_keys:\n")
+		for _, k := range apiKeys {
+			b.WriteString("    - " + k + "\n")
+		}
 	}
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -70,11 +73,12 @@ func TestHandleAuthLogin_NoAPIKeys_Returns503(t *testing.T) {
 	}
 }
 
-func TestHandleAuthLogin_ValidCredentials_ReturnsToken(t *testing.T) {
-	cfgMgr, cleanup := writeTestConfig(t, []string{"demo-admin-key"})
+func TestHandleAuthLogin_TwoKeys_ValidCredentials_ReturnsToken(t *testing.T) {
+	// With two keys, the first is the username and the second the password.
+	cfgMgr, cleanup := writeTestConfig(t, []string{"admin@example.com", "s3cret-pass"})
 	defer cleanup()
 
-	rec := postLogin(t, handleAuthLogin(cfgMgr, newLoginLimiter(5, time.Minute, time.Minute)), `{"email":"admin@example.com","password":"demo-admin-key"}`)
+	rec := postLogin(t, handleAuthLogin(cfgMgr, newLoginLimiter(5, time.Minute, time.Minute)), `{"email":"admin@example.com","password":"s3cret-pass"}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -85,8 +89,52 @@ func TestHandleAuthLogin_ValidCredentials_ReturnsToken(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if body.Token != "demo-admin-key" {
-		t.Fatalf("expected token demo-admin-key, got %q", body.Token)
+	if body.Token != "admin@example.com" {
+		t.Fatalf("expected token to be the username, got %q", body.Token)
+	}
+}
+
+// A correct username with a wrong password must not authenticate. This was a
+// real hole: login accepted a match on either field, so the right email alone
+// logged in regardless of the password.
+func TestHandleAuthLogin_CorrectUserWrongPassword_Returns401(t *testing.T) {
+	cfgMgr, cleanup := writeTestConfig(t, []string{"admin@example.com", "s3cret-pass"})
+	defer cleanup()
+
+	rec := postLogin(t, handleAuthLogin(cfgMgr, newLoginLimiter(5, time.Minute, time.Minute)), `{"email":"admin@example.com","password":"wrong"}`)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong password, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A wrong username with the right password must also fail.
+func TestHandleAuthLogin_WrongUserCorrectPassword_Returns401(t *testing.T) {
+	cfgMgr, cleanup := writeTestConfig(t, []string{"admin@example.com", "s3cret-pass"})
+	defer cleanup()
+
+	rec := postLogin(t, handleAuthLogin(cfgMgr, newLoginLimiter(5, time.Minute, time.Minute)), `{"email":"nobody@example.com","password":"s3cret-pass"}`)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong username, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A single key is accepted only when it appears in BOTH fields (legacy mode).
+func TestHandleAuthLogin_SingleKey_RequiresBothFields(t *testing.T) {
+	cfgMgr, cleanup := writeTestConfig(t, []string{"demo-admin-key"})
+	defer cleanup()
+
+	limiter := newLoginLimiter(5, time.Minute, time.Minute)
+
+	ok := postLogin(t, handleAuthLogin(cfgMgr, limiter), `{"email":"demo-admin-key","password":"demo-admin-key"}`)
+	if ok.Code != http.StatusOK {
+		t.Fatalf("expected 200 when both fields hold the key, got %d: %s", ok.Code, ok.Body.String())
+	}
+
+	bad := postLogin(t, handleAuthLogin(cfgMgr, newLoginLimiter(5, time.Minute, time.Minute)), `{"email":"demo-admin-key","password":"wrong"}`)
+	if bad.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 when the password does not match, got %d: %s", bad.Code, bad.Body.String())
 	}
 }
 

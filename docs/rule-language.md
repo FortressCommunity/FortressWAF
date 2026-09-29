@@ -1,5 +1,10 @@
 # FortressWAF Rule Language Reference
 
+> **Design notes — not the source of truth.** This document describes the
+> intended design. For what the code actually does today, read the
+> [README](README.md) and `deploy/config.yaml`. Where they disagree, the
+> README and the code win.
+
 FortressWAF uses a **YAML-based Domain Specific Language (DSL)** for defining security rules. Rules are compiled into an efficient trie-based matcher at startup and can be hot-reloaded without service interruption.
 
 **Note:** The exact number of pre-built rules varies by release. Rule coverage is documented in the release notes.

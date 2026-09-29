@@ -29,17 +29,16 @@ type Token struct {
 }
 
 type SQLInjectionEngine struct {
-	mu          sync.RWMutex
-	devMode     bool
-	dialects    []string
-	patterns    []*regexp.Regexp
-	encodingRE  *regexp.Regexp
-	commentRE   *regexp.Regexp
-	hexRE       *regexp.Regexp
-	unicodeRE   *regexp.Regexp
-	nullByteRE  *regexp.Regexp
-	doubleEncRE *regexp.Regexp
-	base64RE    *regexp.Regexp
+	mu         sync.RWMutex
+	devMode    bool
+	dialects   []string
+	patterns   []*regexp.Regexp
+	encodingRE *regexp.Regexp
+	commentRE  *regexp.Regexp
+	hexRE      *regexp.Regexp
+	unicodeRE  *regexp.Regexp
+	nullByteRE *regexp.Regexp
+	base64RE   *regexp.Regexp
 }
 
 func NewSQLInjectionEngine(devMode bool) *SQLInjectionEngine {
@@ -57,7 +56,6 @@ func NewSQLInjectionEngine(devMode bool) *SQLInjectionEngine {
 	e.hexRE = regexp.MustCompile(`(?i)(?:0x[0-9a-f]+|x'[0-9a-f]+'|unhex\(|hex\(|char\()`)
 	e.unicodeRE = regexp.MustCompile(`(?i)(?:\\u[0-9a-f]{4}|%u[0-9a-f]{4}|nchar|n'|unicode\()`)
 	e.nullByteRE = regexp.MustCompile(`\x00`)
-	e.doubleEncRE = regexp.MustCompile(`(?:%25[0-9a-f]{2}|%25[0-9a-f]{2}%[0-9a-f]{2})`)
 	e.base64RE = regexp.MustCompile(`(?i)(?:base64_decode|base64_encode|from_base64|to_base64)`)
 
 	e.compilePatterns()
@@ -242,15 +240,8 @@ func (e *SQLInjectionEngine) detectEncodingBypass(value, source string) *Decisio
 		}
 	}
 
-	if e.doubleEncRE.MatchString(value) {
-		return &Decision{
-			Action:   ActionBlock,
-			RuleID:   "SQLI018",
-			RuleName: "Double Encoding",
-			Severity: "high",
-			Score:    75,
-			Evidence: fmt.Sprintf("double encoding detected in %s", source),
-		}
+	if dec := e.detectDoubleEncoding(value, source); dec != nil {
+		return dec
 	}
 
 	if e.hexRE.MatchString(value) {
@@ -276,6 +267,80 @@ func (e *SQLInjectionEngine) detectEncodingBypass(value, source string) *Decisio
 	}
 
 	return nil
+}
+
+// detectDoubleEncoding flags a value that decodes a second time into a SQL
+// metacharacter. A single extra decode is applied; if it introduces a quote,
+// comment, semicolon, or comparison operator that was not already there, the
+// payload is trying to slip a metacharacter past a decoder that only runs once.
+//
+// This replaces a raw %25XX regex that blocked any value containing "%25"
+// followed by two hex-ish characters -- a referring URL, a promo cookie, a page
+// slug -- with no SQL context. Only a character that actually matters to SQL
+// counts, so "%2520" (a space) passes while "%2527" (a quote) is caught.
+func (e *SQLInjectionEngine) detectDoubleEncoding(value, source string) *Decision {
+	// After a single decode (which the query/form parser already applied), a
+	// double-encoded payload still carries escapes: "1%2527..." reaches us as
+	// "1%27...". Decode once more and test the result for a real SQL pattern.
+	// Blocking on the presence of a metacharacter alone is wrong -- a normal
+	// URL-encoded value (a JSON cookie, a referring URL) yields quotes and
+	// slashes on a single decode -- so the decoded text must actually look like
+	// SQL before this fires.
+	if !strings.Contains(value, "%") {
+		return nil
+	}
+	decoded, changed := percentDecodeOnce(value)
+	if !changed || decoded == value {
+		return nil
+	}
+	// The decoded text must introduce a SQL metacharacter the original did not
+	// have, and must match a SQL pattern once normalized.
+	if !introducesMetaChar(value, decoded) {
+		return nil
+	}
+	normalized := e.normalizeInput(decoded)
+	for _, pattern := range e.patterns {
+		if pattern.MatchString(decoded) || pattern.MatchString(normalized) {
+			return &Decision{
+				Action:   ActionBlock,
+				RuleID:   "SQLI018",
+				RuleName: "Double Encoding",
+				Severity: "high",
+				Score:    75,
+				Evidence: fmt.Sprintf("double encoding hides SQL in %s", source),
+			}
+		}
+	}
+	if dec := e.analyzeTokens(e.tokenize(normalized), decoded, source); dec != nil && dec.Action == ActionBlock {
+		dec.RuleID = "SQLI018"
+		dec.RuleName = "Double Encoding"
+		return dec
+	}
+	return nil
+}
+
+// introducesMetaChar reports whether decoding added a SQL metacharacter that
+// was not present in the original text.
+func introducesMetaChar(original, decoded string) bool {
+	for i := 0; i < len(decoded); i++ {
+		if sqlMetaByte(decoded[i]) && strings.IndexByte(original, decoded[i]) < 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// sqlMetaByte reports whether a decoded byte is a character that only appears
+// in SQL attack payloads -- a string quote, a statement terminator, or the raw
+// material of a comment. Common URL characters (/ - = ( ) *) are excluded on
+// purpose: a referring URL decodes "%2F" to "/" on every request, and treating
+// that as double-encoded SQLi blocked ordinary traffic.
+func sqlMetaByte(c byte) bool {
+	switch c {
+	case '\'', '"', ';', '#', '\x00', '\n', '\r':
+		return true
+	}
+	return false
 }
 
 func (e *SQLInjectionEngine) normalizeInput(input string) string {

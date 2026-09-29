@@ -1,0 +1,12 @@
+# GitGuardian configuration.
+#
+# Test fixtures contain credential-shaped strings (an AWS-style key, a JWT) that
+# exercise the response-leak detector. They are synthetic and not real secrets,
+# so test paths are excluded from scanning. Everywhere else is still scanned.
+version: 2
+
+secret:
+  ignored-paths:
+    - "**/*_test.go"
+    - "tests/**"
+    - "ml-engine/test_api.py"

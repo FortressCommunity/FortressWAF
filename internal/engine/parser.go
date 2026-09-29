@@ -12,24 +12,53 @@ import (
 type ParserHardener struct {
 	mu               sync.RWMutex
 	devMode          bool
-	overlongRE       *regexp.Regexp
 	normalizationRE  *regexp.Regexp
 	unicodeControlRE *regexp.Regexp
 	http10RE         *regexp.Regexp
 	http2PrefaceRE   *regexp.Regexp
 }
 
+// hasOverlongUTF8 reports whether s contains a raw overlong or otherwise
+// invalid UTF-8 byte sequence. It inspects the underlying bytes, not runes:
+// s may be a string that failed utf8.ValidString, and a rune-range regexp
+// cannot express byte-level rules in Go. The scan flags the four shapes an
+// overlong encoder produces:
+//
+//	C0/C1 lead            -- overlong two-byte form
+//	F5-FF lead            -- beyond U+10FFFF
+//	E0 80-9F, F0 80-8F    -- overlong three- and four-byte forms
+//	bare 80-BF            -- continuation byte with no lead
+func hasOverlongUTF8(s string) bool {
+	b := []byte(s)
+	for i := 0; i < len(b); i++ {
+		switch {
+		case b[i] == 0xC0 || b[i] == 0xC1:
+			return true
+		case b[i] >= 0xF5:
+			return true
+		case b[i] == 0xE0 && i+1 < len(b) && b[i+1] >= 0x80 && b[i+1] <= 0x9F:
+			return true
+		case b[i] == 0xF0 && i+1 < len(b) && b[i+1] >= 0x80 && b[i+1] <= 0x8F:
+			return true
+		case b[i] >= 0x80 && b[i] <= 0xBF:
+			// A continuation byte is only invalid when it is not preceded by a
+			// valid lead byte in 0xC2-0xF4.
+			if i == 0 || !(b[i-1] >= 0xC2 && b[i-1] <= 0xF4) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func NewParserHardener(devMode bool) *ParserHardener {
 	return &ParserHardener{
 		devMode: devMode,
-		overlongRE: regexp.MustCompile(
-			`[\xC0-\xC1]` +
-				`|[\xF5-\xFF]` +
-				`|[\xF0-\xF4][\x80-\xBF]{0,3}` +
-				`|[\xE0-\xEF][\x80-\xBF]{0,2}` +
-				`|[\xC2-\xDF][\x80-\xBF]` +
-				`|[\x80-\xBF]`,
-		),
+		// Overlong / invalid UTF-8 (the parser-differential trick) is caught by
+		// the utf8.ValidString check in detectUnicodeAttack (PARSER_010) and
+		// the byte scan in hasOverlongUTF8 (PARSER_012). A byte-class regexp
+		// cannot express this: Go reads "[\xC2-\xDF]" as a *rune* range, so the
+		// old pattern matched valid accented letters and blocked ordinary text.
 		normalizationRE: regexp.MustCompile(
 			// Encoded space (%20), tab, #, ? and ; are normal in URLs and were
 			// blocked here, which broke benign paths such as
@@ -37,7 +66,6 @@ func NewParserHardener(devMode bool) *ParserHardener {
 			// bytes remain; dot-segment traversal is handled below.
 			`(?i)(?:%00|%0d|%0a|%08)` +
 				`|(?:\.\./)` +
-				`|(?://+)` +
 				`|(?:/\./)` +
 				`|(?:/\.$)` +
 				`|(?:\\\.\\)`,
@@ -83,9 +111,47 @@ func (p *ParserHardener) Inspect(ctx *RequestContext) (*Decision, error) {
 }
 
 func (p *ParserHardener) detectNormalizationBypass(ctx *RequestContext) *Decision {
-	path := ctx.Path
+	if dec := p.detectTraversalInPath(ctx.Path, "path"); dec != nil {
+		return dec
+	}
 
-	if p.normalizationRE.MatchString(path) {
+	for k, v := range ctx.QueryParams {
+		for _, val := range v {
+			if dec := p.detectTraversalInPath(val, "query:"+k); dec != nil {
+				return dec
+			}
+		}
+	}
+
+	for k, v := range ctx.FormParams {
+		for _, val := range v {
+			if dec := p.detectTraversalInPath(val, "form:"+k); dec != nil {
+				return dec
+			}
+		}
+	}
+
+	for k, v := range ctx.Headers {
+		if dec := p.detectTraversalInPath(v, "header:"+k); dec != nil {
+			return dec
+		}
+	}
+
+	return nil
+}
+
+// detectTraversalInPath decodes percent escapes (to a bounded depth) and
+// reports a path-traversal attempt. It replaces the pattern-only check, which
+// looked at headers but not at query or form values -- so the encoded
+// traversal corpus was only caught incidentally by an over-broad SQLi rule.
+func (p *ParserHardener) detectTraversalInPath(raw, source string) *Decision {
+	if raw == "" {
+		return nil
+	}
+
+	// The raw form: a literal "../" or "..\" segment, or the "....//" trick
+	// (which a normalizer collapses back to "../").
+	if p.normalizationRE.MatchString(raw) {
 		return &Decision{
 			Action:          ActionBlock,
 			RuleID:          "PARSER_001",
@@ -93,30 +159,46 @@ func (p *ParserHardener) detectNormalizationBypass(ctx *RequestContext) *Decisio
 			Severity:        "high",
 			Score:           75,
 			ConfidenceScore: 0.95,
-			Evidence:        fmt.Sprintf("suspicious path normalization pattern in %q", path),
+			Evidence:        fmt.Sprintf("suspicious path normalization pattern in %s", source),
 		}
 	}
 
-	for k, v := range ctx.Headers {
-		if strings.Contains(k, "%") || strings.Contains(v, "%") {
-			decoded, err := p.decodePathValue(v)
-			if err == nil && decoded != v {
-				if strings.Contains(decoded, "../") || strings.Contains(decoded, "..\\") {
-					return &Decision{
-						Action:          ActionBlock,
-						RuleID:          "PARSER_002",
-						RuleName:        "Double-Encoded Path Traversal",
-						Severity:        "critical",
-						Score:           90,
-						ConfidenceScore: 0.98,
-						Evidence:        fmt.Sprintf("double-encoded path traversal in header %s: %q -> %q", k, v, decoded),
-					}
-				}
-			}
+	if !strings.Contains(raw, "%") {
+		return nil
+	}
+
+	decoded, err := p.decodePathValue(raw)
+	if err != nil || decoded == raw {
+		return nil
+	}
+	// Normalize the "....//" and "..//" collapsing tricks before the check.
+	collapsed := collapseDotSegments(decoded)
+	if strings.Contains(decoded, "../") || strings.Contains(decoded, "..\\") ||
+		strings.Contains(collapsed, "../") || strings.Contains(collapsed, "..\\") {
+		return &Decision{
+			Action:          ActionBlock,
+			RuleID:          "PARSER_002",
+			RuleName:        "Encoded Path Traversal",
+			Severity:        "critical",
+			Score:           90,
+			ConfidenceScore: 0.98,
+			Evidence:        fmt.Sprintf("encoded path traversal in %s: %q -> %q", source, raw, decoded),
 		}
 	}
 
 	return nil
+}
+
+// collapseDotSegments removes repeated slashes and the "....//" family so a
+// payload that hides traversal behind collapsed separators is still caught.
+func collapseDotSegments(s string) string {
+	for strings.Contains(s, "//") {
+		s = strings.ReplaceAll(s, "//", "/")
+	}
+	for strings.Contains(s, `\\`) {
+		s = strings.ReplaceAll(s, `\\`, `\`)
+	}
+	return s
 }
 
 func (p *ParserHardener) detectUnicodeAttack(ctx *RequestContext) *Decision {
@@ -159,7 +241,7 @@ func (p *ParserHardener) detectUnicodeAttack(ctx *RequestContext) *Decision {
 			}
 		}
 
-		if p.overlongRE.MatchString(t) {
+		if hasOverlongUTF8(t) {
 			return &Decision{
 				Action:          ActionBlock,
 				RuleID:          "PARSER_012",
@@ -297,32 +379,73 @@ func (p *ParserHardener) detectChunkedAbuse(ctx *RequestContext) *Decision {
 	return nil
 }
 
+// decodePathValue decodes percent-escapes, at most twice, so a
+// double-encoded traversal (%252e%252e = ..) is still seen. The previous
+// version recursed whenever the decoded result still contained a "%", which
+// never terminated for an input like "%25" (decodes to "%", which still
+// contains "%"): it overflowed the stack and crashed the proxy -- a remote
+// denial of service reachable from any header or path containing a percent
+// sign that was not a valid escape. The loop is now bounded.
 func (p *ParserHardener) decodePathValue(v string) (string, error) {
-	if !strings.Contains(v, "%") {
-		return v, nil
-	}
-	var builder strings.Builder
-	builder.Grow(len(v))
-	for i := 0; i < len(v); i++ {
-		if v[i] == '%' && i+2 < len(v) {
-			hex := v[i+1 : i+3]
-			var b byte
-			n, err := fmt.Sscanf(hex, "%02x", &b)
-			if err != nil || n != 1 {
-				builder.WriteByte(v[i])
-				continue
-			}
-			builder.WriteByte(b)
-			i += 2
-		} else {
-			builder.WriteByte(v[i])
+	// Decode repeatedly so multi-encoded traversal (..%25252f = "../", encoded
+	// three deep) is still seen, but with a hard pass limit: the old version
+	// recursed until the result stopped changing, which never terminated for an
+	// input like "%25" (decodes to "%") and crashed the proxy with a stack
+	// overflow. Each pass must make progress or the loop stops, so an ordinary
+	// value with a stray "%" cannot loop.
+	const maxPasses = 6
+	result := v
+	for pass := 0; pass < maxPasses; pass++ {
+		if !strings.Contains(result, "%") {
+			break
 		}
-	}
-	result := builder.String()
-	if strings.Contains(result, "%") {
-		return p.decodePathValue(result)
+		decoded, changed := percentDecodeOnce(result)
+		if !changed {
+			break
+		}
+		result = decoded
 	}
 	return result, nil
+}
+
+// percentDecodeOnce decodes every valid %XX escape in s exactly once and
+// reports whether anything changed. An invalid escape (a bare "%", "%zz", a
+// trailing "%A") is left as-is, so an ordinary value containing "%" cannot
+// loop or be mangled.
+func percentDecodeOnce(s string) (string, bool) {
+	var builder strings.Builder
+	builder.Grow(len(s))
+	changed := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]) {
+			builder.WriteByte(hexByte(s[i+1], s[i+2]))
+			i += 2
+			changed = true
+			continue
+		}
+		builder.WriteByte(s[i])
+	}
+	return builder.String(), changed
+}
+
+func isHex(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+func hexByte(hi, lo byte) byte {
+	return hexVal(hi)<<4 | hexVal(lo)
+}
+
+func hexVal(c byte) byte {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10
+	}
+	return 0
 }
 
 func extractBoundary(ct string) string {

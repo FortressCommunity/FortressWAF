@@ -1,5 +1,10 @@
 # Request & Response Rewriting
 
+> **Design notes — not the source of truth.** This document describes the
+> intended design. For what the code actually does today, read the
+> [README](../README.md) and `deploy/config.yaml`. Where they disagree, the
+> README and the code win.
+
 FortressWAF can modify HTTP requests and responses in real-time, enabling header manipulation, body transformation, and URL redirection based on configurable conditions.
 
 ## Architecture

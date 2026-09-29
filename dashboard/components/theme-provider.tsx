@@ -32,8 +32,14 @@ function subscribeToStorage(callback: () => void) {
 }
 
 function readStoredTheme(): Theme {
-  const stored = localStorage.getItem(STORAGE_KEY)
-  if (stored === 'light' || stored === 'dark' || stored === 'system') return stored
+  // Storage can throw on Android browsers and in private/strict mode; a blocked
+  // store must fall back to the default theme, not take the page down.
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (stored === 'light' || stored === 'dark' || stored === 'system') return stored
+  } catch {
+    // ignore and use the default
+  }
   return 'dark'
 }
 
@@ -89,7 +95,11 @@ export function ThemeProvider({
 
   const setTheme = React.useCallback((t: Theme) => {
     setOverride(t)
-    localStorage.setItem(STORAGE_KEY, t)
+    try {
+      localStorage.setItem(STORAGE_KEY, t)
+    } catch {
+      // Storage unavailable; the in-memory override still applies this session.
+    }
   }, [])
 
   return (

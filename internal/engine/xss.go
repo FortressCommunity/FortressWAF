@@ -103,7 +103,14 @@ func (e *XSSEngine) compilePatterns() {
 	e.octalEscapeRE = regexp.MustCompile(`\\[0-9a-fA-F]{2,4}`)
 	e.hexEscapeRE = regexp.MustCompile(`\\x[0-9a-fA-F]{1,4}`)
 
-	e.encodedXSS = regexp.MustCompile(`(?i)(?:\\x[0-9a-f]{2}|\\u[0-9a-f]{4}|%[0-9a-f]{2}|&#x?[0-9a-f]+;).*(?:script|alert|prompt|confirm|onerror|onload)`)
+	// XSS007: a script keyword whose letters are broken up by encoding, e.g.
+	// "<scr%69pt>" or "%3Cscript%3E" or "script\\x3e". The escape must touch the
+	// keyword -- immediately before or after it -- not sit anywhere in the
+	// value. The previous pattern paired any encoded byte with a keyword later
+	// in the string, so an ordinary body like
+	// "email=user%40mail.com&interests=javascript,sql" (an encoded "@" with the
+	// word "javascript" somewhere after it) was blocked as encoded XSS.
+	e.encodedXSS = regexp.MustCompile(`(?i)(?:\\x[0-9a-f]{2}|\\u[0-9a-f]{4}|%[0-9a-f]{2}|&#x?[0-9a-f]+;)(?:script|alert|prompt|confirm|onerror|onload)|(?:script|alert|prompt|confirm|onerror|onload)(?:\\x[0-9a-f]{2}|\\u[0-9a-f]{4}|%[0-9a-f]{2}|&#x?[0-9a-f]+;)|(?:scr|ale|pro|con|one|onl)[^a-z0-9]{0,2}(?:\\x[0-9a-f]{2}|\\u[0-9a-f]{4}|%[0-9a-f]{2}|&#x?[0-9a-f]+;)[^a-z0-9]{0,2}(?:ipt|rt|mpt|firm|rror|oad)`)
 
 	// JS sinks: an XSS payload eventually calls something, so a bare sink
 	// call inside a request value is a strong signal on its own. This is what

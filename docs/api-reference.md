@@ -1,5 +1,10 @@
 # REST API Reference
 
+> **Design notes — not the source of truth.** This document describes the
+> intended design. For what the code actually does today, read the
+> [README](README.md) and `deploy/config.yaml`. Where they disagree, the
+> README and the code win.
+
 FortressWAF provides a comprehensive REST API for integration and automation. This document details all available endpoints, authentication methods, and usage examples.
 
 ## Base URL

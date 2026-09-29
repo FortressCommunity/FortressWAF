@@ -137,14 +137,14 @@ export default function RulesPage() {
               No custom rules configured. Detection runs entirely on the built-in modules above.
             </p>
           ) : (
-            <div className="overflow-x-auto scrollbar-thin">
+            <div className="max-h-96 overflow-x-auto overflow-y-auto scrollbar-thin">
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-border">
-                    <th className="py-2 text-left text-xs font-medium text-muted-foreground">ID</th>
-                    <th className="py-2 text-left text-xs font-medium text-muted-foreground">Name</th>
-                    <th className="py-2 text-left text-xs font-medium text-muted-foreground">Severity</th>
-                    <th className="py-2 text-left text-xs font-medium text-muted-foreground">Status</th>
+                    <th className="sticky top-0 bg-card py-2 text-left text-xs font-medium text-muted-foreground">ID</th>
+                    <th className="sticky top-0 bg-card py-2 text-left text-xs font-medium text-muted-foreground">Name</th>
+                    <th className="sticky top-0 bg-card py-2 text-left text-xs font-medium text-muted-foreground">Severity</th>
+                    <th className="sticky top-0 bg-card py-2 text-left text-xs font-medium text-muted-foreground">Status</th>
                   </tr>
                 </thead>
                 <tbody>

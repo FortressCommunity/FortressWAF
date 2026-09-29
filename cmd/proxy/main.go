@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -10,6 +11,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"html"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -23,10 +26,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/FortressWAF/FortressWAF/internal/blocklist"
 	"github.com/FortressWAF/FortressWAF/internal/compliance"
 	"github.com/FortressWAF/FortressWAF/internal/config"
 	"github.com/FortressWAF/FortressWAF/internal/engine"
 	"github.com/FortressWAF/FortressWAF/internal/siem"
+	"github.com/FortressWAF/FortressWAF/internal/sites"
+	"github.com/FortressWAF/FortressWAF/internal/traincorpus"
+	"github.com/FortressWAF/FortressWAF/internal/uaparse"
 	"github.com/gorilla/mux"
 	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -398,25 +405,43 @@ func main() {
 }
 
 type wafHandler struct {
-	mu         sync.RWMutex
-	cfgMgr     *config.Manager
-	engine     *engine.Engine
-	rewriteMgr *engine.RewriteManager
-	siemMgr    *siem.Manager
-	auditLog   *compliance.AuditLog
-	dev        bool
-	proxies    map[string]*httputil.ReverseProxy
+	mu           sync.RWMutex
+	cfgMgr       *config.Manager
+	engine       *engine.Engine
+	rewriteMgr   *engine.RewriteManager
+	siemMgr      *siem.Manager
+	auditLog     *compliance.AuditLog
+	responseLeak *engine.ResponseLeakInspector
+	bans         *blocklist.Store
+	trainer      *traincorpus.Collector
+	dev          bool
+	proxies      map[string]*httputil.ReverseProxy
 }
 
+// globalBans and globalTrainer are shared with the admin API so the console can
+// list bans and the collector reports the same counters the request path feeds.
+var (
+	globalBans    = blocklist.New()
+	globalTrainer *traincorpus.Collector
+)
+
 func newWAFHandler(cfgMgr *config.Manager, e *engine.Engine, rm *engine.RewriteManager, sm *siem.Manager, al *compliance.AuditLog, dev bool) http.Handler {
+	respInspect := cfgMgr.Get().RespInspect
+	cfg := cfgMgr.Get()
+	if globalTrainer == nil && cfg.Training.Enabled && cfg.Training.CorpusDir != "" {
+		globalTrainer = traincorpus.NewCollector(cfg.Training.CorpusDir)
+	}
 	h := &wafHandler{
-		cfgMgr:     cfgMgr,
-		engine:     e,
-		rewriteMgr: rm,
-		siemMgr:    sm,
-		auditLog:   al,
-		dev:        dev,
-		proxies:    make(map[string]*httputil.ReverseProxy),
+		cfgMgr:       cfgMgr,
+		engine:       e,
+		rewriteMgr:   rm,
+		siemMgr:      sm,
+		auditLog:     al,
+		responseLeak: engine.NewResponseLeakInspector(respInspect.Enabled && respInspect.InspectBody, respInspect.Block, 1<<20),
+		bans:         globalBans,
+		trainer:      globalTrainer,
+		dev:          dev,
+		proxies:      make(map[string]*httputil.ReverseProxy),
 	}
 
 	for _, site := range cfgMgr.Get().Sites {
@@ -494,6 +519,24 @@ func (h *wafHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	activeConns.Add(1)
 	defer activeConns.Add(-1)
 
+	clientIP := h.engine.ClientIP(r)
+
+	// A banned address is refused before inspection: no rule needs to run.
+	if h.bans != nil && h.bans.IsBanned(clientIP) {
+		blockedRequests.Add(1)
+		h.recordRequest(r, "request_blocked", "banned_ip", "blocked", "", clientIP)
+		w.Header().Set("X-FortressWAF-Action", "block")
+		w.Header().Set("X-FortressWAF-Rule", "BAN001")
+		writeBlockedResponse(w, r, &engine.Decision{
+			Action:   engine.ActionBlock,
+			RuleID:   "BAN001",
+			RuleName: "IP address is banned",
+			Severity: "high",
+			Evidence: "source address is on the operator ban list",
+		})
+		return
+	}
+
 	host := strings.Split(r.Host, ":")[0]
 	cfg := h.cfgMgr.Get()
 	site := cfg.FindSiteByDomain(host)
@@ -542,20 +585,13 @@ func (h *wafHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch decision.Action {
 	case engine.ActionAllow:
 		allowedRequests.Add(1)
+		h.recordRequest(r, "request_allowed", "", "allowed", "", clientIP)
 		h.forwardRequest(w, r, site)
 
 	case engine.ActionBlock:
 		blockedRequests.Add(1)
-		if h.auditLog != nil {
-			_ = h.auditLog.Append(compliance.AuditEntry{
-				ActorType: "client",
-				ActorIP:   h.engine.ClientIP(r),
-				Action:    "request_blocked",
-				Resource:  r.Host + r.URL.Path,
-				Result:    "blocked",
-				Metadata:  decision.RuleID + ": " + decision.RuleName,
-			})
-		}
+		h.recordRequest(r, "request_blocked", decision.RuleID+": "+decision.RuleName, "blocked", decision.Evidence, clientIP)
+		h.collectTraining(r, decision, clientIP)
 		slog.Warn("request blocked",
 			"host", r.Host,
 			"path", r.URL.Path,
@@ -566,22 +602,23 @@ func (h *wafHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"evidence", decision.Evidence,
 			"score", decision.Score,
 		)
-		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-FortressWAF-Action", "block")
 		w.Header().Set("X-FortressWAF-Rule", decision.RuleID)
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"blocked":    true,
-			"action":     "block",
-			"rule_id":    decision.RuleID,
-			"rule_name":  decision.RuleName,
-			"severity":   decision.Severity,
-			"evidence":   decision.Evidence,
-			"request_id": r.Header.Get("X-Request-ID"),
-		})
+		// Raise an alert for high-severity blocks so the operator inbox and the
+		// dashboard reflect live activity. The store deduplicates repeats.
+		if decision.Severity == "critical" || decision.Severity == "high" {
+			serverAlerts.add(
+				decision.Severity,
+				decision.RuleName,
+				fmt.Sprintf("%s %s from %s blocked (%s)", r.Method, r.URL.Path, h.engine.ClientIP(r), decision.Evidence),
+				decision.RuleID,
+			)
+		}
+		writeBlockedResponse(w, r, decision)
 
 	case engine.ActionChallenge:
 		challengedReqs.Add(1)
+		h.recordRequest(r, "request_challenged", decision.RuleID, "challenged", decision.Evidence, clientIP)
 		slog.Info("challenge issued",
 			"host", r.Host,
 			"path", r.URL.Path,
@@ -595,6 +632,7 @@ func (h *wafHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case engine.ActionMonitor:
 		monitoredReqs.Add(1)
+		h.recordRequest(r, "request_monitored", decision.RuleID, "monitored", decision.Evidence, clientIP)
 		slog.Info("monitor: request passed through",
 			"host", r.Host,
 			"path", r.URL.Path,
@@ -609,6 +647,7 @@ func (h *wafHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case engine.ActionRateLimit:
 		rateLimitedReqs.Add(1)
+		h.recordRequest(r, "request_rate_limited", "RATE", "rate_limited", "", clientIP)
 		slog.Warn("rate limited",
 			"host", r.Host,
 			"path", r.URL.Path,
@@ -629,8 +668,128 @@ func (h *wafHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	default:
 		allowedRequests.Add(1)
+		h.recordRequest(r, "request_allowed", "", "allowed", "", clientIP)
 		h.forwardRequest(w, r, site)
 	}
+}
+
+// recordRequest writes one enriched audit entry for a request: method, path,
+// source IP, parsed browser/device, and the request headers. It is called for
+// every inspected request so the console log is complete, not just for blocks.
+func (h *wafHandler) recordRequest(r *http.Request, action, metadata, result, evidence, clientIP string) {
+	if h.auditLog == nil {
+		return
+	}
+	ua := r.UserAgent()
+	info := uaparse.Parse(ua)
+	headers := make(map[string]string, len(r.Header))
+	for k, v := range r.Header {
+		if len(v) == 0 {
+			continue
+		}
+		if isSensitiveHeader(k) {
+			headers[k] = "[redacted]"
+			continue
+		}
+		headers[k] = v[0]
+	}
+	meta := metadata
+	if evidence != "" {
+		meta = metadata + " | " + evidence
+	}
+	_ = h.auditLog.Append(compliance.AuditEntry{
+		ActorType: "client",
+		ActorIP:   clientIP,
+		Action:    action,
+		Resource:  r.Host + r.URL.Path,
+		Result:    result,
+		Metadata:  meta,
+		Method:    r.Method,
+		Path:      r.URL.Path,
+		UserAgent: ua,
+		Browser:   info.Browser,
+		Device:    info.Device,
+		Headers:   headers,
+	})
+}
+
+// collectTraining offers a high-confidence block to the corpus collector. It
+// uses the request's own payload (query, form, or body) as the sample text and
+// the rule family as the label; anything the collector deems unfit is dropped.
+func (h *wafHandler) collectTraining(r *http.Request, decision *engine.Decision, clientIP string) {
+	if h.trainer == nil || !h.trainer.Enabled() {
+		return
+	}
+	payload := bestPayload(r, decision)
+	if payload == "" {
+		return
+	}
+	kept, reason := h.trainer.Consider(traincorpus.Sample{
+		RuleID:     decision.RuleID,
+		Payload:    payload,
+		Source:     decision.InspectorName,
+		ActorIP:    clientIP,
+		Score:      decision.Score,
+		ObservedAt: time.Now(),
+	})
+	if kept {
+		slog.Info("training sample collected", "rule", decision.RuleID, "category", decision.RuleID)
+	} else if h.dev {
+		slog.Debug("training sample rejected", "rule", decision.RuleID, "reason", reason)
+	}
+}
+
+// isSensitiveHeader reports whether a header's value must never be written to
+// the audit log. HTTP header names are case-insensitive, so the check lowercases
+// the name, and it matches a prefix/substring rule rather than an exact list:
+// the previous exact-case check missed X-API-Key (which this very system uses
+// for auth) and any differently-cased spelling, leaking credentials into logs.
+func isSensitiveHeader(name string) bool {
+	n := strings.ToLower(name)
+	switch n {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie",
+		"x-api-key", "x-auth-token", "x-access-token", "x-csrf-token",
+		"x-xsrf-token", "x-session-token", "x-forwarded-authorization":
+		return true
+	}
+	// Anything that looks like a credential by name.
+	for _, marker := range []string{"token", "secret", "password", "passwd", "api-key", "apikey", "auth", "credential", "session", "cookie"} {
+		if strings.Contains(n, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// bestPayload extracts the most attack-like string from a request: the offending
+// query value, form value, or body. It is deliberately narrow -- it returns the
+// request's own bytes, never a synthesized string -- and prefers the decoded
+// value over the "key=value" pair so the corpus holds the payload itself.
+func bestPayload(r *http.Request, decision *engine.Decision) string {
+	// Prefer the longest decoded query value: that is the untrusted input the
+	// inspector actually matched, without the parameter name.
+	best := ""
+	for _, vals := range r.URL.Query() {
+		for _, v := range vals {
+			if len(v) > len(best) {
+				best = v
+			}
+		}
+	}
+	if best != "" {
+		return best
+	}
+	if r.Method == "POST" && r.ContentLength > 0 && r.ContentLength <= 4096 {
+		buf := make([]byte, r.ContentLength)
+		if n, err := io.ReadFull(r.Body, buf); err == nil {
+			r.Body = io.NopCloser(bytes.NewReader(buf))
+			return string(buf[:n])
+		}
+	}
+	if r.URL.RawQuery != "" {
+		return r.URL.RawQuery
+	}
+	return decision.Evidence
 }
 
 func (h *wafHandler) forwardRequest(w http.ResponseWriter, r *http.Request, site *config.SiteConfig) {
@@ -647,6 +806,78 @@ func (h *wafHandler) forwardRequest(w http.ResponseWriter, r *http.Request, site
 		proxy = h.proxies[site.Name]
 	}
 	h.mu.Unlock()
+
+	// When response inspection is on, buffer the origin response so it can be
+	// scanned for leaked secrets before any byte reaches the client. The writer
+	// holds the response until Commit, so a leak can still be blocked.
+	if h.responseLeak != nil && h.responseLeak.Enabled() {
+		rw := engine.NewResponseWriter(w, true, 1<<20)
+		proxy.ServeHTTP(rw, r)
+
+		contentType := rw.Header().Get("Content-Type")
+		if decision := h.responseLeak.InspectResponse(contentType, rw.StatusCode, rw.Body); decision != nil {
+			if !decision.Blocked {
+				// Monitor mode (the default): log the leak but let the response
+				// through. Content scanning stays advisory until an operator
+				// opts into blocking.
+				monitoredReqs.Add(1)
+				slog.Warn("response leak detected (monitor mode, not blocked)",
+					"host", r.Host,
+					"path", r.URL.Path,
+					"ip", r.RemoteAddr,
+					"rule_id", decision.RuleID,
+					"rule_name", decision.RuleName,
+					"severity", decision.Severity,
+				)
+				rw.Commit()
+				return
+			}
+
+			blockedRequests.Add(1)
+			serverAlerts.add(
+				decision.Severity,
+				"Data leak blocked: "+decision.RuleName,
+				fmt.Sprintf("upstream response for %s leaked data to %s", r.URL.Path, h.engine.ClientIP(r)),
+				decision.RuleID,
+			)
+			slog.Warn("response blocked: data leak",
+				"host", r.Host,
+				"path", r.URL.Path,
+				"ip", r.RemoteAddr,
+				"rule_id", decision.RuleID,
+				"rule_name", decision.RuleName,
+				"severity", decision.Severity,
+			)
+			if h.auditLog != nil {
+				_ = h.auditLog.Append(compliance.AuditEntry{
+					ActorType: "upstream",
+					ActorIP:   h.engine.ClientIP(r),
+					Action:    "response_blocked",
+					Resource:  r.Host + r.URL.Path,
+					Result:    "blocked",
+					Metadata:  decision.RuleID + ": " + decision.RuleName,
+				})
+			}
+			// The origin response was buffered, not sent, so replace it with a
+			// generic block reply. The leaked value never left the process.
+			out := rw.Discard()
+			out.Header().Set("Content-Type", "application/json")
+			out.Header().Set("X-FortressWAF-Action", "block")
+			out.Header().Set("X-FortressWAF-Rule", decision.RuleID)
+			out.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(out).Encode(map[string]interface{}{
+				"blocked":   true,
+				"action":    "block",
+				"rule_id":   decision.RuleID,
+				"rule_name": decision.RuleName,
+				"severity":  decision.Severity,
+				"reason":    "response contained sensitive data",
+			})
+			return
+		}
+		rw.Commit()
+		return
+	}
 
 	proxy.ServeHTTP(w, r)
 }
@@ -690,6 +921,39 @@ func newAdminRouter(cfgMgr *config.Manager, e *engine.Engine, al *compliance.Aud
 	protected.HandleFunc("/sites", handleListSites(cfgMgr)).Methods("GET")
 	protected.HandleFunc("/rules", handleListRules(cfgMgr)).Methods("GET")
 	protected.HandleFunc("/inspectors", handleListInspectors(e, al)).Methods("GET")
+	protected.HandleFunc("/inspectors/{name}", handleInspectorDetail(e, al)).Methods("GET")
+
+	// Operator console extras: metrics snapshot, threat analytics, live traffic,
+	// alert inbox, and a secret-free config view.
+	protected.HandleFunc("/metrics/snapshot", handleMetricsSnapshot()).Methods("GET")
+	protected.HandleFunc("/analytics", handleAnalytics(al)).Methods("GET")
+	protected.HandleFunc("/traffic", handleTrafficLog(al)).Methods("GET")
+	protected.HandleFunc("/config/detail", handleConfigDetail(cfgMgr)).Methods("GET")
+	protected.HandleFunc("/alerts", handleAlerts()).Methods("GET", "POST")
+	protected.HandleFunc("/alerts/{id}/ack", handleAlertByID(authIdentity(cfgMgr))).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/alerts/{id}", handleAlertByID(authIdentity(cfgMgr))).Methods("DELETE", "OPTIONS")
+
+	// Protected domains: list, add (with DNS verification), remove.
+	domainMgr := sites.NewManager(cfgMgr, func(action, detail string) {
+		if al != nil {
+			_ = al.Append(compliance.AuditEntry{
+				ActorType: "operator",
+				Action:    action,
+				Resource:  detail,
+				Result:    "ok",
+			})
+		}
+	})
+	protected.HandleFunc("/domains", handleDomains(domainMgr, cfgMgr)).Methods("GET", "POST", "OPTIONS")
+	protected.HandleFunc("/domains/{domain}", handleDomainDelete(domainMgr)).Methods("DELETE", "OPTIONS")
+	protected.HandleFunc("/domains/{domain}/verify", handleDomainVerify(cfgMgr)).Methods("POST", "OPTIONS")
+
+	// IP ban list: list, ban, unban.
+	protected.HandleFunc("/bans", handleBans()).Methods("GET", "POST", "OPTIONS")
+	protected.HandleFunc("/bans/{ip}", handleBanDelete()).Methods("DELETE", "OPTIONS")
+
+	// Training corpus status for the live collector.
+	protected.HandleFunc("/training/status", handleTrainingStatus(cfgMgr)).Methods("GET")
 
 	// Compliance + audit trail: verified against live runtime state.
 	protected.HandleFunc("/compliance/frameworks", handleComplianceFrameworks(ce)).Methods("GET")
@@ -770,8 +1034,8 @@ func handleAuthLogin(cfgMgr *config.Manager, limiter *loginLimiter) http.Handler
 		}
 
 		var req authLoginRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		if err := decodeJSONBody(w, r, &req); err != nil {
+			writeDecodeError(w, err)
 			return
 		}
 		if req.Email == "" || req.Password == "" {
@@ -791,24 +1055,32 @@ func handleAuthLogin(cfgMgr *config.Manager, limiter *loginLimiter) http.Handler
 			return
 		}
 
-		// The demo dashboard sends the key in the password field; either field
-		// is accepted. Compared in constant time.
-		valid := false
-		for _, key := range cfg.Admin.APIKeys {
-			kb := []byte(key)
-			if subtle.ConstantTimeCompare([]byte(req.Email), kb) == 1 ||
-				subtle.ConstantTimeCompare([]byte(req.Password), kb) == 1 {
-				valid = true
-				break
-			}
+		// Credentials. Each entry in api_keys is a secret the console may hold:
+		// with two entries the first is the username and the second the
+		// password, and BOTH must match -- a correct username with a wrong
+		// password must not log in. With a single entry (legacy/demo) that one
+		// value is accepted in either field. Every comparison is constant time.
+		validUser := false
+		validPass := false
+		if len(cfg.Admin.APIKeys) >= 2 {
+			user := []byte(cfg.Admin.APIKeys[0])
+			pass := []byte(cfg.Admin.APIKeys[1])
+			validUser = subtle.ConstantTimeCompare([]byte(req.Email), user) == 1
+			validPass = subtle.ConstantTimeCompare([]byte(req.Password), pass) == 1
+		} else {
+			key := []byte(cfg.Admin.APIKeys[0])
+			validUser = subtle.ConstantTimeCompare([]byte(req.Email), key) == 1
+			validPass = subtle.ConstantTimeCompare([]byte(req.Password), key) == 1
 		}
-		if !valid {
+		if !validUser || !validPass {
 			limiter.recordFailure(r)
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 			return
 		}
 		limiter.recordSuccess(r)
 
+		// The bearer token is the username key; it is compared against the full
+		// key list on every subsequent request.
 		token := cfg.Admin.APIKeys[0]
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"token": token,
@@ -819,6 +1091,20 @@ func handleAuthLogin(cfgMgr *config.Manager, limiter *loginLimiter) http.Handler
 				"role":  "admin",
 			},
 		})
+	}
+}
+
+// authIdentity returns a function that reads the caller's identity from the
+// bearer token (the configured admin key). It is used to attribute an action
+// such as acknowledging an alert.
+func authIdentity(cfgMgr *config.Manager) func(*http.Request) string {
+	return func(r *http.Request) string {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		cfg := cfgMgr.Get()
+		if validAPIKey(token, cfg.Admin.APIKeys) {
+			return token
+		}
+		return "operator"
 	}
 }
 
@@ -1094,6 +1380,7 @@ func handleListInspectors(e *engine.Engine, al *compliance.AuditLog) http.Handle
 			"desync":                "DSYNC",
 			"parser_hardener":       "PARSER_",
 			"credential_protection": "CRED",
+			"response_inspect":      "LEAK",
 		}
 
 		inspectors := e.Inspectors()
@@ -1184,6 +1471,120 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		slog.Warn("json encode failed", "error", err, "status", status)
 	}
+}
+
+// writeBlockedResponse replies to a blocked request. A browser (which sends
+// Accept: text/html) gets a readable block page naming the rule and the reason;
+// an API client (Accept: application/json, or no Accept) gets JSON. Both carry
+// the X-FortressWAF-* headers.
+func writeBlockedResponse(w http.ResponseWriter, r *http.Request, decision *engine.Decision) {
+	requestID := r.Header.Get("X-Request-ID")
+	// Default to the human-readable page: anyone hitting the site in a browser
+	// should see a proper block page, never a raw JSON blob. Only a client that
+	// explicitly asks for JSON (an API call that sets Accept: application/json)
+	// gets the machine-readable body.
+	if clientWantsJSON(r) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
+			"blocked":    true,
+			"action":     "block",
+			"rule_id":    decision.RuleID,
+			"rule_name":  decision.RuleName,
+			"severity":   decision.Severity,
+			"evidence":   decision.Evidence,
+			"request_id": requestID,
+		}); err != nil {
+			slog.Warn("json encode failed", "error", err, "rule_id", decision.RuleID)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = w.Write(blockPage(r, decision))
+}
+
+// htmlEscape escapes a value for safe interpolation into the block page.
+func htmlEscape(s string) string {
+	return html.EscapeString(s)
+}
+
+// clientWantsJSON reports whether the caller explicitly asked for a JSON reply.
+// Everything else -- a browser navigation, a plain curl, a request with no
+// Accept header -- gets the HTML block page. A request is treated as an API
+// call only when it clearly wants JSON: an Accept header naming JSON without
+// html, or a JSON content-type, or an XHR/fetch marker.
+func clientWantsJSON(r *http.Request) bool {
+	// A top-level browser navigation always includes text/html in Accept.
+	if strings.Contains(r.Header.Get("Accept"), "text/html") {
+		return false
+	}
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		return true
+	}
+	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		return true
+	}
+	if r.Header.Get("X-Requested-With") == "XMLHttpRequest" {
+		return true
+	}
+	// No Accept at all: show the page rather than a JSON blob.
+	return false
+}
+
+// blockPage renders the human-readable block page shown to anyone hitting the
+// site in a browser. It states, in plain language, that the request was held
+// because it looked like an attack, and names the rule so an operator can
+// correlate it with the audit log. Rule name and path are HTML-escaped, so a
+// crafted value cannot inject markup.
+func blockPage(r *http.Request, decision *engine.Decision) []byte {
+	return []byte(fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Request blocked — FortressWAF</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         background:#0d1117; color:#e6edf3; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
+  .card { max-width:600px; padding:40px; margin:24px; border:1px solid #21262d; border-radius:14px; background:#161b22; }
+  .badge { display:inline-block; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:600;
+           letter-spacing:.04em; text-transform:uppercase; background:#3d1414; color:#ff6b6b; border:1px solid #4d1a1a; }
+  h1 { font-size:22px; margin:18px 0 6px; }
+  p { color:#9da7b3; line-height:1.6; margin:8px 0; }
+  dl { margin:22px 0 0; display:grid; grid-template-columns:auto 1fr; gap:8px 16px; font-size:13px; }
+  dt { color:#6e7681; }
+  dd { margin:0; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:#e6edf3; word-break:break-all; }
+  .foot { margin-top:26px; font-size:12px; color:#6e7681; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <span class="badge">Blocked by FortressWAF</span>
+    <h1>Maaf, permintaan Anda kami tahan</h1>
+    <p>Permintaan ini dihentikan oleh <strong>FortressWAF</strong> karena isinya terdeteksi
+       menyerupai pola serangan terhadap aplikasi web (misalnya SQL injection, XSS, atau
+       command injection). Demi keamanan, permintaan tersebut tidak diteruskan ke server.</p>
+    <p>Jika Anda merasa ini keliru — misalnya Anda hanya mengetik teks biasa di sebuah form —
+       silakan hubungi pengelola situs dan sebutkan ID permintaan di bawah ini.</p>
+    <dl>
+      <dt>Alasan</dt><dd>%s — %s</dd>
+      <dt>Tingkat</dt><dd>%s</dd>
+      <dt>Jalur</dt><dd>%s</dd>
+      <dt>ID Permintaan</dt><dd>%s</dd>
+    </dl>
+    <p class="foot">FortressWAF — Web Application Firewall</p>
+  </div>
+</body>
+</html>`,
+		htmlEscape(decision.RuleID),
+		htmlEscape(decision.RuleName),
+		htmlEscape(decision.Severity),
+		htmlEscape(r.URL.Path),
+		htmlEscape(r.Header.Get("X-Request-ID")),
+	))
 }
 
 func challengePage(r *http.Request) []byte {

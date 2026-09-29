@@ -1,5 +1,10 @@
 # OWASP Protection
 
+> **Design notes — not the source of truth.** This document describes the
+> intended design. For what the code actually does today, read the
+> [README](../README.md) and `deploy/config.yaml`. Where they disagree, the
+> README and the code win.
+
 FortressWAF includes detection rules for common OWASP Top 10 attack categories. This document shows example rule configurations. Actual coverage depends on the rule set loaded.
 
 ## OWASP Top 10 Coverage

@@ -1,5 +1,10 @@
 # Kubernetes Deployment
 
+> **Design notes — not the source of truth.** This document describes the
+> intended design. For what the code actually does today, read the
+> [README](README.md) and `deploy/config.yaml`. Where they disagree, the
+> README and the code win.
+
 FortressWAF includes a Helm chart for Kubernetes deployments. This guide covers deployment scenarios including high availability, auto-scaling, and integration with service meshes.
 
 ## Prerequisites
