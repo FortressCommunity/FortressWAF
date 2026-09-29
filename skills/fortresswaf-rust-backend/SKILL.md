@@ -136,6 +136,11 @@ It prints a line per category (`xss blocked 134/135 (99.3%)`) and
   change and must be recorded there.
 - **Don't hardcode colors or off-scale px** in the emitted pages — use the
   `var(--…)` token spine. Don't replace a lucide icon with an emoji.
+- **Don't build a client, or clone the whole `Config`, per request.** The proxy
+  shares one pooled upstream client on `AppState` and `Manager::get()` returns a
+  cheap `Arc<Config>`. Constructing either per request exhausts sockets or
+  thrashes memory and makes the proxy hang under load (this was a real bug,
+  documented in `rust/DEVIATIONS.md` §14).
 - **Don't add `#[allow(clippy::…)]`** to silence a lint. Fix it; if the
   construction mirrors the `Go` original deliberately, the crate already allows
   it in `lib.rs` with a comment.

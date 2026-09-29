@@ -238,7 +238,9 @@ impl Config {
 /// Port of `Manager`. Go ran a `fsnotify` goroutine; this port uses the
 /// `notify` crate's recommended-watcher in a background thread.
 pub struct Manager {
-    config: Arc<RwLock<Config>>,
+    /// The live config behind an `Arc` so `get()` hands out a cheap refcount
+    /// clone instead of deep-cloning the whole `Config` on every request.
+    config: Arc<RwLock<Arc<Config>>>,
     on_change: Arc<Mutex<Vec<Box<dyn Fn(&Config) + Send + Sync>>>>,
     watcher: Option<notify::RecommendedWatcher>,
     abs_path: Option<PathBuf>,
@@ -249,7 +251,7 @@ impl Manager {
     /// still usable), matching Go.
     pub fn new(path: &str) -> Result<Self, String> {
         let cfg = load(path)?;
-        let config = Arc::new(RwLock::new(cfg));
+        let config = Arc::new(RwLock::new(Arc::new(cfg)));
         let on_change: Arc<Mutex<Vec<Box<dyn Fn(&Config) + Send + Sync>>>> =
             Arc::new(Mutex::new(Vec::new()));
 
@@ -310,7 +312,7 @@ impl Manager {
     /// Used by tests and by callers that manage persistence themselves.
     pub fn new_detached(cfg: Config) -> Self {
         Manager {
-            config: Arc::new(RwLock::new(cfg)),
+            config: Arc::new(RwLock::new(Arc::new(cfg))),
             on_change: Arc::new(Mutex::new(Vec::new())),
             watcher: None,
             abs_path: None,
@@ -318,12 +320,12 @@ impl Manager {
     }
 
     fn reload_inner(
-        config: &Arc<RwLock<Config>>,
+        config: &Arc<RwLock<Arc<Config>>>,
         on_change: &Arc<Mutex<Vec<Box<dyn Fn(&Config) + Send + Sync>>>>,
         path: &Path,
     ) -> Result<(), String> {
         let new_cfg = load(&path.to_string_lossy())?;
-        *config.write() = new_cfg.clone();
+        *config.write() = Arc::new(new_cfg.clone());
         let callbacks = on_change.lock();
         for cb in callbacks.iter() {
             cb(&new_cfg);
@@ -340,8 +342,8 @@ impl Manager {
         Self::reload_inner(&self.config, &self.on_change, &path)
     }
 
-    /// Port of `Get`.
-    pub fn get(&self) -> Config {
+    /// Port of `Get`. Returns a cheap `Arc` clone, not a deep copy.
+    pub fn get(&self) -> Arc<Config> {
         self.config.read().clone()
     }
 
@@ -353,13 +355,18 @@ impl Manager {
     /// Port of `UpdateConfig`: mutate, validate, save, notify.
     pub fn update_config(&self, f: impl FnOnce(&mut Config)) -> Result<(), String> {
         let updated = {
-            let mut cfg = self.config.write();
+            // Clone the current config, mutate the copy, validate, persist,
+            // then swap the Arc in. A copy-on-write update keeps readers on the
+            // old Arc until the new one is validated and saved.
+            let mut cfg = (**self.config.read()).clone();
             f(&mut cfg);
             validate(&cfg).map_err(|e| format!("validate updated config: {e}"))?;
             if !cfg.file_path.is_empty() {
                 save_to_file(&cfg.file_path, &cfg)?;
             }
-            cfg.clone()
+            let arc = Arc::new(cfg);
+            *self.config.write() = arc.clone();
+            arc
         };
 
         let callbacks = self.on_change.lock();
@@ -394,12 +401,12 @@ pub fn set_default_manager(m: Arc<Manager>) {
     *DEFAULT_MANAGER.lock() = Some(m);
 }
 
-/// Port of `GetConfig`.
-pub fn get_config() -> Config {
+/// Port of `GetConfig`. Returns a shared `Arc<Config>`, not a deep copy.
+pub fn get_config() -> Arc<Config> {
     let m = DEFAULT_MANAGER.lock().clone();
     match m {
         Some(m) => m.get(),
-        None => default_config(),
+        None => Arc::new(default_config()),
     }
 }
 
@@ -565,5 +572,45 @@ prometheus:
         assert_eq!(cfg.prometheus.port, 1234);
         // path still defaults
         assert_eq!(cfg.prometheus.path, "/metrics");
+    }
+
+    #[test]
+    fn get_returns_shared_arc_not_a_deep_copy() {
+        // The request path calls get() on every request; it must hand out a
+        // refcount clone, not deep-copy the whole Config (which caused memory
+        // and latency pressure under load).
+        let mut c = default_config();
+        c.sites.push(crate::types::SiteConfig {
+            name: "demo".into(),
+            domains: vec!["localhost".into()],
+            upstream: "http://127.0.0.1:8080".into(),
+            ..Default::default()
+        });
+        let m = Manager::new_detached(c);
+        let a = m.get();
+        let b = m.get();
+        assert!(Arc::ptr_eq(&a, &b), "get() must share one Arc<Config>");
+    }
+
+    #[test]
+    fn update_config_swaps_the_arc_for_readers() {
+        let mut c = default_config();
+        c.sites.push(crate::types::SiteConfig {
+            name: "demo".into(),
+            domains: vec!["localhost".into()],
+            upstream: "http://127.0.0.1:8080".into(),
+            ..Default::default()
+        });
+        let m = Manager::new_detached(c);
+        let before = m.get();
+        m.update_config(|cfg| {
+            cfg.sites[0].upstream = "http://127.0.0.1:9999".into();
+        })
+        .unwrap();
+        let after = m.get();
+        assert!(!Arc::ptr_eq(&before, &after));
+        assert_eq!(after.sites[0].upstream, "http://127.0.0.1:9999");
+        // The old handle still sees the old value (no torn read).
+        assert_eq!(before.sites[0].upstream, "http://127.0.0.1:8080");
     }
 }

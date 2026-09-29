@@ -193,13 +193,55 @@ This is the one place the Rust port intentionally produces *different bytes*
 than the Go backend; the semantics (status codes, headers, escaping, token
 generation) are unchanged.
 
+## 14. Concurrency and resource fixes (the port had hangs under load)
+
+Four issues in the first Rust version caused the proxy to stall under many
+concurrent requests. All are fixed; each has a regression guard.
+
+1. **Upstream HTTP client was built per request.** `send_upstream` constructed a
+   fresh `hyper_util` client for every forwarded request, so there was no
+   connection pooling: every request opened (and dropped) a TCP connection to
+   the origin. Under load this exhausted ephemeral ports and file descriptors,
+   and further requests blocked indefinitely. **Fix:** one pooled client on
+   `AppState` (`pool_max_idle_per_host(64)`), reused by every request. Go's
+   `http.Transport` had a shared pool, so this restores parity.
+
+2. **`Manager::get()` deep-cloned the whole `Config` per call.** The proxy calls
+   it on every request; cloning every site, rule, and nested map on the hot path
+   caused heavy allocation churn and latency. **Fix:** the manager holds
+   `Arc<RwLock<Arc<Config>>>` and `get()` returns a cheap `Arc` clone. Go
+   returned a pointer, so this restores parity. Guarded by
+   `get_returns_shared_arc_not_a_deep_copy` and
+   `update_config_swaps_the_arc_for_readers`.
+
+3. **The audit log was unbounded and appended non-atomically.** It grew without
+   limit under sustained traffic, and its append read-then-wrote under separate
+   locks, so two concurrent appends could compute the same sequence number or
+   chain onto a stale `prev_hash` (corrupting the chain). **Fix:** the append
+   holds one write lock for the whole operation, and the log is capped
+   (`AuditLog::with_cap`, default 100k) as a ring that drops the oldest entries.
+   `verify_integrity` still validates the retained window. Guarded by
+   `audit_log_is_bounded_and_still_verifies_after_trim`.
+
+4. **Unbounded upstream call.** A slow origin could pin a task (and its
+   connection) forever. **Fix:** upstream request and body reads are wrapped in
+   a 30s `tokio::time::timeout`.
+
+A related correctness fix: audit entries previously resolved an empty peer
+address (they read a `SocketAddr` extension that was never populated), so the
+recorded `real_ip`/`host` were wrong. The peer address is now threaded
+explicitly into `record_request`.
+
+Verified by a live stress test: 500 concurrent requests to the proxy and 200
+parallel requests to the admin health endpoint all returned `200` with no hangs.
+
 ---
 
 ## Verification summary
 
 - `cargo build --release` — clean across the workspace.
 - `cargo clippy --workspace` — zero warnings; `cargo fmt --check` — clean.
-- `cargo test --workspace` — **288 tests passing, 0 failing.**
+- `cargo test --workspace` — **291 tests passing, 0 failing.**
 - **Attack-corpus parity** (`crates/proxy/tests/attack_corpus.rs`) replays the
   project's own training corpus through the Rust engine and meets every
   documented floor:
