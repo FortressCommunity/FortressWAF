@@ -31,9 +31,21 @@ services:
       - CONFIG_PATH=/etc/fortresswaf/config.yaml
       - DATABASE_URL=postgres://fortress:fortress@postgres:5432/fortresswaf?sslmode=disable
       - ML_ENGINE_URL=http://ml-engine:8000
+      # Admin console credentials, expanded into config.yaml's ${...} refs.
+      # Values come from deploy/.env (gitignored), so they stay out of git.
+      - ADMIN_EMAIL=${ADMIN_EMAIL}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
     volumes:
-      - ./config.yaml:/etc/fortresswaf/config.yaml
+      # The runtime config lives in a writable DIRECTORY, not a single mounted
+      # file. The WAF runs as a nonroot user and rewrites the config atomically
+      # (temp file + rename) when a domain is added; renaming over a single-file
+      # bind mount fails with "Resource busy", so the directory is mounted and
+      # the config is one file inside it. deploy.sh seeds and chowns this file.
+      - ./runtime:/etc/fortresswaf
       - fortress-data:/var/lib/fortresswaf
+      # Same corpus volume the sidecar reads, so collected samples are visible
+      # to training immediately.
+      - ml-corpus:/corpus
     # /health is served by the admin API on 8443, not the proxy listener.
     # The distroless image has no shell, so the probe is a static Go binary.
     healthcheck:
@@ -60,8 +72,15 @@ services:
       - "127.0.0.1:8000:8000"
     environment:
       - MODEL_DIR=/app/models
+      # The training corpus is a shared volume: the WAF collector appends
+      # high-confidence samples, the sidecar trains from them.
+      - CORPUS_DIR=/corpus
     volumes:
-      - ml-models:/app/models
+      # Only the writable model artefacts live on a volume. Mounting the whole
+      # /app/models would shadow the image's classifier.py and other source,
+      # which is why the code must stay in the image layer.
+      - ml-models:/app/models/persisted
+      - ml-corpus:/corpus
     # The image defines its own python-based HEALTHCHECK (no wget in
     # python:3.14-slim); defining one here would shadow it and break.
     networks:
@@ -72,9 +91,10 @@ services:
       context: ../dashboard
       dockerfile: Dockerfile
       args:
-        # Inlined into the client bundle at build time, so it must be the URL
-        # the browser can reach. Caddy terminates TLS for this host.
-        NEXT_PUBLIC_API_URL: https://admin-fort.tkjt3yapera.my.id/api/v1
+        # Same-origin relative path: the browser calls /api/v1 on whatever host
+        # served the dashboard. Caddy routes /api/* to the WAF on that same
+        # host, so the dashboard and its API share one origin and one DNS name.
+        NEXT_PUBLIC_API_URL: /api/v1
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
@@ -153,5 +173,8 @@ volumes:
   postgres-data:
   fortress-data:
   ml-models:
+  # Shared between fortresswaf (writer) and ml-engine (reader): the live
+  # training corpus.
+  ml-corpus:
   caddy-data:
   caddy-config:

@@ -3,16 +3,23 @@ import { cn } from '@/lib/utils'
 
 const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableElement>>(
   ({ className, ...props }, ref) => (
-    <div className="relative w-full overflow-auto scrollbar-thin">
+    <div className="relative w-full overflow-x-auto overflow-y-auto scrollbar-thin">
       <table ref={ref} className={cn('w-full caption-bottom text-sm', className)} {...props} />
     </div>
   ),
 )
 Table.displayName = 'Table'
 
+// Sticky top-0 keeps the header visible while a long table scrolls. Written as
+// a plain className string (not composed through cn) so the sticky contract is
+// readable at a glance and static analysis can see it.
 const TableHeader = React.forwardRef<HTMLTableSectionElement, React.HTMLAttributes<HTMLTableSectionElement>>(
   ({ className, ...props }, ref) => (
-    <thead ref={ref} className={cn('[&_tr]:border-b [&_tr]:border-border', className)} {...props} />
+    <thead
+      ref={ref}
+      className="sticky top-0 z-10 bg-card/95 backdrop-blur [&_tr]:border-b [&_tr]:border-border"
+      {...props}
+    />
   ),
 )
 TableHeader.displayName = 'TableHeader'
@@ -36,7 +43,7 @@ const TableRow = React.forwardRef<HTMLTableRowElement, React.HTMLAttributes<HTML
     <tr
       ref={ref}
       className={cn(
-        'border-b border-border transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted',
+        'border-b border-border transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none data-[state=selected]:bg-muted',
         className,
       )}
       {...props}

@@ -1,4 +1,4 @@
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
 import { IBM_Plex_Sans, IBM_Plex_Mono } from 'next/font/google'
 import { ThemeProvider } from '@/components/theme-provider'
 import { ToastProvider, ToastViewport } from '@/components/ui/toast'
@@ -21,6 +21,19 @@ const plexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: 'FortressWAF — Admin console',
   description: 'Management dashboard for the FortressWAF reverse proxy',
+}
+
+// Explicit mobile viewport. The console is used from phones at the booth, so
+// the layout must fit a real device width without zooming out; the app is
+// usable down to ~360px. maximumScale is left uncapped on purpose so people
+// who need to zoom can.
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  themeColor: [
+    { media: '(prefers-color-scheme: dark)', color: '#0A0E13' },
+    { media: '(prefers-color-scheme: light)', color: '#EEF2F6' },
+  ],
 }
 
 // Applied before hydration so the correct colour scheme is painted on the first

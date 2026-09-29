@@ -2,6 +2,11 @@
 
 # Configuration Reference
 
+> **Design notes — not the source of truth.** This document describes the
+> intended design. For what the code actually does today, read the
+> [README](README.md) and `deploy/config.yaml`. Where they disagree, the
+> README and the code win.
+
 This document provides a reference for FortressWAF configuration options. The configuration file is written in YAML format and is typically located at `/app/config/config.yaml` or specified via the `--config` command-line flag.
 
 ## Configuration File Structure

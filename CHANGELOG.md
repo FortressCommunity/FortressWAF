@@ -5,6 +5,56 @@ All notable changes to FortressWAF are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Protected-domain management with DNS verification.** Add a domain from the
+  console; it is protected only after the WAF itself resolves its A/AAAA records
+  and confirms one points at this server (`server.expected_ips`). Removal and a
+  re-check action are included. New package `internal/sites`.
+- **Full request log.** Every inspected request is recorded with method, path,
+  source IP, parsed browser/device, and the full header set. New package
+  `internal/uaparse` turns a User-Agent into "Chrome 120 on Android" etc.
+- **IP ban / unban.** Banned addresses are refused before inspection, on every
+  site; bans can expire. New package `internal/blocklist`.
+- **Live training corpus + validated retrain.** High-confidence blocks
+  (named attack families, score ≥ 70) are labelled by rule and appended to a
+  shared corpus volume (`internal/traincorpus`). The ML sidecar retrains from it
+  and adopts the new model only if it scores at least as well as the incumbent;
+  a worse or unjudgeable candidate is rejected. New ML endpoints
+  `/v1/model/retrain` (validated) and `/v1/model/training-status`.
+- **Dashboard pages**: Overview, Live traffic, Alerts, Analytics, IP bans,
+  Domains, Detection, Audit trail, Compliance, System. Route error boundaries so
+  a client error shows a retry screen instead of a blank page.
+- **`scripts/deploy.sh`**: rebuild → recreate → restart Caddy (refresh service
+  DNS) → verify the browser path end to end.
+
+### Changed
+- **Login now requires username AND password.** Previously a match on either
+  field authenticated, so a correct username with a wrong password logged in.
+  With two configured keys the first is the username, the second the password.
+- **Admin API bodies are capped** at 1 MiB; oversized bodies return `413`.
+- **Config is written atomically** (temp file + rename) instead of truncated in
+  place, and the runtime config lives in a writable directory so the nonroot
+  container can rewrite it. Duplicate site names and duplicate domains are now
+  rejected by validation.
+- **Upstream URLs are validated** (http/https + host) before being written.
+- **Caddy serves the admin API on the same origin as the dashboard** (`/api/*`
+  on the dashboard host), removing the separate API hostname.
+- **False-positive fixes:** standard HTTP methods (OPTIONS/HEAD/PATCH/PUT/DELETE)
+  are no longer "verb tampering"; ordinary clients (curl, axios, okhttp, Postman)
+  and real browsers are no longer bots; contact-form fields (`email`, `phone`,
+  `address`) are not honeypots; sensitive-path matching is segment-anchored;
+  response inspection runs in monitor mode by default; non-ASCII text and encoded
+  values in URLs/headers/cookies are not attacks.
+- **Security fixes:** `decodePathValue` no longer recurses without bound (was a
+  remote stack-overflow DoS); double-encoding detection requires the decoded
+  byte to be SQL-significant; credential headers are redacted case-insensitively.
+
+### Removed
+- `internal/api` and its orphaned `internal/rules` dependency: dead code that
+  carried an auth bypass, a no-op rate limiter, and an unauthenticated WebSocket.
+
 ## [1.2.0] - 2026-05-25
 
 ### Added

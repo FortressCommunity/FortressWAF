@@ -45,9 +45,14 @@ func NewBotDetector(devMode bool) *BotDetector {
 			"zgrab":        regexp.MustCompile(`(?i)zgrab`),
 		},
 		honeypotFields: []string{
-			"email", "phone", "address", "website",
-			"hp_", "honeypot_", "botfield_", "nocomment",
-			"url_", "website_",
+			// Only genuinely decoy field names belong here. A real contact or
+			// signup form legitimately has "email", "phone", "address", and
+			// "website" fields, so treating those as honeypots blocked ordinary
+			// form submissions. Honeypot fields are instead conventionally
+			// hidden and given a name no human form would use.
+			"hp_", "honeypot", "botfield", "bot_field",
+			"nocomment", "leaveblank", "dontfill", "do_not_fill",
+			"trapfield", "trap_field", "hidden_field_for_bots",
 		},
 	}
 
@@ -68,26 +73,26 @@ func NewBotDetector(devMode bool) *BotDetector {
 }
 
 func (d *BotDetector) compileBadBotPatterns() []*regexp.Regexp {
+	// Only genuine attack tooling belongs here. The previous list also matched
+	// ordinary clients -- the bare word "java" matched "JavaScript" in real
+	// browser UAs, and axios/okhttp/fetch/got/Postman are what legitimate mobile
+	// apps and API consumers use -- so those were blocked as bots. Each pattern
+	// is now anchored to a distinctive product token.
 	patterns := []string{
-		`(?i)masscan`, `(?i)nmap`, `(?i)nessus`, `(?i)openvas`,
-		`(?i)nikto`, `(?i)sqlmap`, `(?i)dirbuster`, `(?i)gobuster`,
-		`(?i)wpscan`, `(?i)joomscan`, `(?i)droopescan`,
-		`(?i)acunetix`, `(?i)netsparker`, `(?i)appscan`, `(?i)w3af`,
-		`(?i)burpsuite`, `(?i)zap`, `(?i)paros`, `(?i)webinspect`,
-		`(?i)curl`, `(?i)wget`, `(?i)python-requests`, `(?i)aiohttp`,
-		`(?i)httpx`, `(?i)httpie`, `(?i)gotthit`, `(?i)fasthttp`,
-		`(?i)scrapy`, `(?i)mechanize`, `(?i)pycurl`, `(?i)libcurl`,
-		`(?i)ruby`, `(?i)perl`, `(?i)php`, `(?i)java`,
-		`(?i)okhttp`, `(?i)ktor`, `(?i)unirest`, `(?i)restsharp`,
-		`(?i)axios`, `(?i)fetch`, `(?i)superagent`, `(?i)got`,
-		`(?i)node-fetch`, `(?i)undici`, `(?i)needle`,
-		`(?i)zgrab`, `(?i)zmap`, `(?i)massdns`,
-		`(?i)chrome-lighthouse`, `(?i)pagespeed`,
-		`(?i)ubermetrics`, `(?i)sumo`, `(?i)domnutch`,
-		`(?i)heritrix`, `(?i)gigablast`, `(?i)htdig`,
-		`(?i)findlink`, `(?i)csaw`, `(?i)spbot`,
-		`(?i)survey`, `(?i)research`, `(?i)analyzer`,
+		`(?i)\bmasscan\b`, `(?i)\bnmap\b`, `(?i)\bnessus\b`, `(?i)\bopenvas\b`,
+		`(?i)\bnikto\b`, `(?i)\bsqlmap\b`, `(?i)\bdirbuster\b`, `(?i)\bgobuster\b`,
+		`(?i)\bwpscan\b`, `(?i)\bjoomscan\b`, `(?i)\bdroopescan\b`,
+		`(?i)\bacunetix\b`, `(?i)\bnetsparker\b`, `(?i)\bappscan\b`, `(?i)\bw3af\b`,
+		`(?i)\bburpsuite\b`, `(?i)\bzap\b`, `(?i)\bparos\b`, `(?i)\bwebinspect\b`,
+		`(?i)\bzgrab\b`, `(?i)\bzmap\b`, `(?i)\bmassdns\b`,
+		`(?i)\bhydra\b`, `(?i)\bwfuzz\b`, `(?i)\bferoxbuster\b`, `(?i)\bffuf\b`,
+		`(?i)\bnuclei\b`, `(?i)\bcommix\b`, `(?i)\bxray\b`, `(?i)\bwhatweb\b`,
 	}
+	// Note: "curl", "wget", "python-requests", and similar tools are NOT bad
+	// bots. They are heavily used for legitimate automation, health checks, and
+	// manual calls (the exhibition script itself uses curl); blocking them broke
+	// ordinary traffic. Their requests are still inspected for attacks by every
+	// other detector.
 
 	result := make([]*regexp.Regexp, 0, len(patterns))
 	for _, p := range patterns {

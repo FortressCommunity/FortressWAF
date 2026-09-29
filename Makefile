@@ -10,20 +10,20 @@ COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -ldflags="-s -w -X 'github.com/FortressWAF/FortressWAF/internal/version.Version=$(VERSION)' -X 'github.com/FortressWAF/FortressWAF/internal/version.Commit=$(COMMIT)' -X 'github.com/FortressWAF/FortressWAF/internal/version.BuildDate=$(BUILD_DATE)'"
 
-.PHONY: help dev build build-all test lint lint-go lint-py lint-ts clean docker-build docker-up docker-down docker-logs release install uninstall coverage bench profile format generate docs
+.PHONY: help dev dev-down dev-logs build build-all test lint lint-go lint-py lint-ts clean docker-build docker-up docker-down docker-logs deploy restart-caddy release install uninstall coverage bench profile format generate docs
 
 help: ## Display this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-dev: ## Start development environment
-	docker compose -f deploy/docker-compose.dev.yml up -d --build
+dev: ## Start development environment (same stack as production)
+	cd deploy && docker compose up -d --build
 
 dev-down: ## Stop development environment
-	docker compose -f deploy/docker-compose.dev.yml down -v
+	cd deploy && docker compose down
 
 dev-logs: ## View development logs
-	docker compose -f deploy/docker-compose.dev.yml logs -f
+	cd deploy && docker compose logs -f
 
 build: ## Build all Go binaries
 	@mkdir -p $(BIN_DIR)
@@ -108,27 +108,22 @@ clean: ## Clean build artifacts
 	@echo "Clean complete"
 
 docker-build: ## Build all Docker images
-	docker build -t fortresswaf/proxy:latest .
-	docker build -t fortresswaf/ml-engine:latest ml-engine/
-	docker build -t fortresswaf/dashboard:latest dashboard/
-	@echo "Docker images built"
+	cd deploy && docker compose build
 
-docker-build-multi: ## Build multi-arch Docker images
-	docker buildx build --platform linux/amd64,linux/arm64 -t fortresswaf/proxy:latest .
-	docker buildx build --platform linux/amd64,linux/arm64 -t fortresswaf/ml-engine:latest ml-engine/
-	docker buildx build --platform linux/amd64,linux/arm64 -t fortresswaf/dashboard:latest dashboard/
+docker-up: ## Start the full stack
+	cd deploy && docker compose up -d
 
-docker-up: ## Start full production stack
-	docker compose -f deploy/docker-compose.prod.yml up -d
+docker-down: ## Stop the full stack (keeps volumes)
+	cd deploy && docker compose down
 
-docker-down: ## Stop full production stack
-	docker compose -f deploy/docker-compose.prod.yml down -v
+docker-logs: ## View stack logs
+	cd deploy && docker compose logs -f
 
-docker-logs: ## View production logs
-	docker compose -f deploy/docker-compose.prod.yml logs -f
+deploy: ## Rebuild + redeploy + restart Caddy + verify the browser path
+	bash scripts/deploy.sh
 
-docker-staging: ## Start staging environment
-	docker compose -f deploy/docker-compose.staging.yml up -d
+restart-caddy: ## Refresh Caddy's service DNS (fixes 502 after a recreate)
+	cd deploy && docker compose restart caddy
 
 format: ## Format code
 	$(GO) fmt ./...

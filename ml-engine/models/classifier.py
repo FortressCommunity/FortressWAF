@@ -6,6 +6,7 @@ from typing import Optional, Tuple, Dict, List
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import cross_val_score, StratifiedKFold
 from sklearn.pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
@@ -208,7 +209,6 @@ class AttackClassifier:
         X = vectorizer.fit_transform(texts)
         model = LogisticRegression(
             C=1.0,
-            multi_class="multinomial",
             solver="lbfgs",
             max_iter=500,
             random_state=42,
@@ -220,6 +220,55 @@ class AttackClassifier:
             ("vectorizer", vectorizer),
             ("classifier", model),
         ])
+        self._save_fallback()
+
+    def evaluate_fallback(self, texts: List[str], labels: List[str]) -> float:
+        """Return cross-validated accuracy of a *candidate* pipeline, or 0 when
+        there is not enough labelled data to judge. Used to reject a retrain
+        that would make the classifier worse than what is already loaded."""
+        if len(texts) < 10:
+            return 0.0
+        label_ids = [ATTACK_CLASS_INDEX.get(l, ATTACK_CLASS_INDEX["no-attack"]) for l in labels]
+        if len(set(label_ids)) < 2:
+            # A single class cannot be scored; treat as unjudgeable.
+            return 0.0
+        try:
+            vectorizer = TfidfVectorizer(
+                max_features=5000, ngram_range=(1, 3), sublinear_tf=True,
+                token_pattern=r"(?u)\b\w+\b",
+            )
+            X = vectorizer.fit_transform(texts)
+            n_splits = min(5, min(label_ids.count(c) for c in set(label_ids)))
+            if n_splits < 2:
+                return 0.0
+            cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+            model = LogisticRegression(
+                max_iter=500, random_state=42, n_jobs=-1,
+            )
+            scores = cross_val_score(model, X, label_ids, cv=cv, scoring="accuracy")
+            return float(np.mean(scores))
+        except Exception as e:
+            logger.warning(f"evaluate_fallback failed: {e}")
+            return 0.0
+
+    def build_candidate(self, texts: List[str], labels: List[str]):
+        """Fit and return a candidate pipeline without adopting it, so the
+        caller can score it against the current model before swapping."""
+        vectorizer = TfidfVectorizer(
+            max_features=5000, ngram_range=(1, 3), sublinear_tf=True,
+            min_df=2, max_df=0.95, token_pattern=r"(?u)\b\w+\b",
+        )
+        label_ids = [ATTACK_CLASS_INDEX.get(l, ATTACK_CLASS_INDEX["no-attack"]) for l in labels]
+        X = vectorizer.fit_transform(texts)
+        model = LogisticRegression(
+            max_iter=500, random_state=42, n_jobs=-1,
+        )
+        model.fit(X, label_ids)
+        return Pipeline([("vectorizer", vectorizer), ("classifier", model)])
+
+    def adopt(self, pipeline: Pipeline):
+        """Install a candidate pipeline as the live model and persist it."""
+        self.fallback_model = pipeline
         self._save_fallback()
 
     def _save_fallback(self):

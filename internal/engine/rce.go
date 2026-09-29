@@ -67,7 +67,12 @@ func (r *RCEInjection) compilePatterns() {
 		regexp.MustCompile(`(?i)(?:rO0|aced0005|H4sI|BAMARQ)`),
 		regexp.MustCompile(`(?i)(?:\b(?:ObjectInputStream|readObject|unserialize|unserialize|deserialize|deserialize|pickle|loads)\b)`),
 		regexp.MustCompile(`(?i)(?:\bysoserial\b|\bgadget\b|\bcommons-collections\b|\bcommons-collections4\b|\bC3P0\b|\bjavassist\b|\bjython\b|\brome\b|\bspring\b|\bhibernate\b)`),
-		regexp.MustCompile(`(?i)(?:\xac\xed\x00\x05|#002|#003)`),
+		// The raw Java-serialization magic (AC ED 00 05) is covered in its hex
+		// and base64 forms by "aced0005" / "rO0" above. A byte-class regexp for
+		// the literal bytes does not work in Go (a rune-class like \xac matches
+		// U+00AC, not the byte 0xAC), so it was removed rather than left as a
+		// pattern that looks like it detects something but never matches.
+		regexp.MustCompile(`(?i)(?:#002|#003)`),
 		regexp.MustCompile(`(?i)(?:O:[0-9]+:"[^"]+":[0-9]+:\{)`),
 		regexp.MustCompile(`(?i)(?:a:[0-9]+:\{i:[0-9]+;s:[0-9]+:")`),
 		regexp.MustCompile(`(?i)(?:%00\*|%00[0-9a-f]{2}|\\\\x00)`),

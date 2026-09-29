@@ -4,8 +4,8 @@ import * as React from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
-  LayoutDashboard, Globe, Shield, ScrollText, ShieldCheck,
-  Menu, X, Sun, Moon, ChevronDown, LogOut,
+  LayoutDashboard, Globe, Shield, ScrollText, ShieldCheck, Radio, Bell, BarChart3, Settings2,
+  Ban, Menu, X, Sun, Moon, ChevronDown, LogOut,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -20,12 +20,29 @@ import type { User } from '@/types'
 
 // Only pages backed by a real endpoint. The previous nav linked to logs,
 // patches, settings and admin pages whose routes were never implemented.
-const navItems = [
-  { label: 'Overview', href: '/dashboard', icon: <LayoutDashboard className="w-4 h-4" /> },
-  { label: 'Sites', href: '/dashboard/sites', icon: <Globe className="w-4 h-4" /> },
-  { label: 'Detection', href: '/dashboard/rules', icon: <Shield className="w-4 h-4" /> },
-  { label: 'Audit', href: '/dashboard/audit', icon: <ScrollText className="w-4 h-4" /> },
-  { label: 'Compliance', href: '/dashboard/compliance', icon: <ShieldCheck className="w-4 h-4" /> },
+// Grouped by what an operator is doing: watching (live), triaging (alerts),
+// understanding (analytics), and configuring (system).
+const navGroups: Array<{ label: string; items: Array<{ label: string; href: string; icon: React.ReactNode }> }> = [
+  {
+    label: 'Monitor',
+    items: [
+      { label: 'Overview', href: '/dashboard', icon: <LayoutDashboard className="w-4 h-4" /> },
+      { label: 'Live traffic', href: '/dashboard/traffic', icon: <Radio className="w-4 h-4" /> },
+      { label: 'Alerts', href: '/dashboard/alerts', icon: <Bell className="w-4 h-4" /> },
+      { label: 'Analytics', href: '/dashboard/analytics', icon: <BarChart3 className="w-4 h-4" /> },
+      { label: 'IP bans', href: '/dashboard/bans', icon: <Ban className="w-4 h-4" /> },
+    ],
+  },
+  {
+    label: 'Configure',
+    items: [
+      { label: 'Detection', href: '/dashboard/rules', icon: <Shield className="w-4 h-4" /> },
+      { label: 'Domains', href: '/dashboard/sites', icon: <Globe className="w-4 h-4" /> },
+      { label: 'Audit trail', href: '/dashboard/audit', icon: <ScrollText className="w-4 h-4" /> },
+      { label: 'Compliance', href: '/dashboard/compliance', icon: <ShieldCheck className="w-4 h-4" /> },
+      { label: 'System', href: '/dashboard/system', icon: <Settings2 className="w-4 h-4" /> },
+    ],
+  },
 ]
 
 function Avatar({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -49,10 +66,24 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   const { toast } = useToast()
   const [sidebarOpen, setSidebarOpen] = React.useState(false)
   const [user, setUser] = React.useState<User | null>(null)
+  const [unacked, setUnacked] = React.useState(0)
 
   React.useEffect(() => {
     api.auth.me().then(setUser).catch(() => setUser(null))
   }, [])
+
+  // Poll the unacknowledged alert count so the sidebar shows live triage load.
+  React.useEffect(() => {
+    let alive = true
+    const load = () => {
+      api.alerts.list().then((a) => {
+        if (alive) setUnacked(a.unacked)
+      }).catch(() => {})
+    }
+    load()
+    const id = setInterval(load, 5000)
+    return () => { alive = false; clearInterval(id) }
+  }, [pathname])
 
   function handleLogout() {
     setToken(null)
@@ -75,27 +106,42 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           <span className="font-semibold tracking-tight text-foreground">FortressWAF</span>
         </div>
 
-        <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-2 scrollbar-thin">
-          {navItems.map((item) => {
-            const isActive = pathname === item.href || (item.href !== '/dashboard' && pathname.startsWith(item.href))
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => setSidebarOpen(false)}
-                aria-current={isActive ? 'page' : undefined}
-                className={cn(
-                  'flex items-center gap-3 rounded-control px-3 py-2 text-sm transition-colors duration-150',
-                  isActive
-                    ? 'bg-primary/15 text-primary font-medium'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-                )}
-              >
-                {item.icon}
-                {item.label}
-              </Link>
-            )
-          })}
+        <nav className="flex-1 space-y-4 overflow-y-auto px-3 py-3 scrollbar-thin">
+          {navGroups.map((group) => (
+            <div key={group.label}>
+              <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                {group.label}
+              </p>
+              <div className="space-y-0.5">
+                {group.items.map((item) => {
+                  const isActive = pathname === item.href || (item.href !== '/dashboard' && pathname.startsWith(item.href))
+                  const badgeCount = item.href === '/dashboard/alerts' ? unacked : 0
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      onClick={() => setSidebarOpen(false)}
+                      aria-current={isActive ? 'page' : undefined}
+                      className={cn(
+                        'flex items-center gap-3 rounded-control px-3 py-2 text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                        isActive
+                          ? 'bg-primary/15 text-primary font-medium'
+                          : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                      )}
+                    >
+                      {item.icon}
+                      <span className="flex-1">{item.label}</span>
+                      {badgeCount > 0 && (
+                        <span className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-destructive px-1.5 text-[10px] font-semibold tabular-nums text-destructive-foreground">
+                          {badgeCount > 99 ? '99+' : badgeCount}
+                        </span>
+                      )}
+                    </Link>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
 
         <div className="shrink-0 border-t border-border p-3">
@@ -116,7 +162,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="glass-chrome sticky top-0 z-30 flex items-center gap-4 px-4 h-16 border-b border-border">
+        <header className="glass-chrome sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border px-3 sm:h-16 sm:gap-4 sm:px-4">
           <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Toggle navigation" onClick={() => setSidebarOpen(!sidebarOpen)}>
             {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </Button>
@@ -155,7 +201,7 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        <main className="p-6">
+        <main className="min-w-0 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:p-5 lg:p-6">
           {children}
         </main>
       </div>

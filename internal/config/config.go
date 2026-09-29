@@ -342,8 +342,13 @@ type CAPTCHAConfig struct {
 }
 
 type ResponseInspectConfig struct {
-	Enabled           bool     `yaml:"enabled"`
-	InspectBody       bool     `yaml:"inspect_body"`
+	Enabled     bool `yaml:"enabled"`
+	InspectBody bool `yaml:"inspect_body"`
+	// Block controls whether a detected leak is blocked (502) or only logged.
+	// Defaults to false: response inspection scans content, so a match in
+	// legitimate documentation or a code sample (for example a DSN shown as an
+	// example) must not take a page down until the operator opts in.
+	Block             bool     `yaml:"block"`
 	SensitivePatterns []string `yaml:"sensitive_patterns"`
 }
 
@@ -477,6 +482,24 @@ type Config struct {
 	ShadowMode      ShadowModeConfig      `yaml:"shadow_mode"`
 	LearningMode    LearningModeConfig    `yaml:"learning_mode"`
 	Performance     PerformanceConfig     `yaml:"performance"`
+	Server          ServerConfig          `yaml:"server"`
+	Training        TrainingConfig        `yaml:"training"`
+}
+
+// ServerConfig describes this deployment, used to verify that a domain added
+// through the console actually points at this server before it is protected.
+type ServerConfig struct {
+	// ExpectedIPs are the addresses a protected domain must resolve to.
+	ExpectedIPs []string `yaml:"expected_ips"`
+}
+
+// TrainingConfig controls the live-corpus collector.
+type TrainingConfig struct {
+	// CorpusDir is the ml-engine data directory the collector appends to.
+	CorpusDir string `yaml:"corpus_dir"`
+	// Enabled turns collection on. It is off by default so nothing is written
+	// until an operator points it at a real corpus.
+	Enabled bool `yaml:"enabled"`
 }
 
 type Manager struct {
@@ -661,15 +684,30 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("at least one site must be configured")
 	}
 
+	// FindSiteByDomain returns the first match, so a duplicate domain on two
+	// sites would silently make the second unreachable. Reject it up front, and
+	// reject duplicate site names for the same reason.
+	seenSiteName := make(map[string]int, len(c.Sites))
+	seenDomain := make(map[string]string)
 	for i, site := range c.Sites {
 		if site.Name == "" {
 			return fmt.Errorf("site[%d]: name is required", i)
 		}
+		if prev, dup := seenSiteName[site.Name]; dup {
+			return fmt.Errorf("site[%d] %q: duplicate site name (also site[%d])", i, site.Name, prev)
+		}
+		seenSiteName[site.Name] = i
 		if len(site.Domains) == 0 {
 			return fmt.Errorf("site[%d] %q: at least one domain is required", i, site.Name)
 		}
 		if site.Upstream == "" {
 			return fmt.Errorf("site[%d] %q: upstream is required", i, site.Name)
+		}
+		for _, domain := range site.Domains {
+			if owner, dup := seenDomain[domain]; dup {
+				return fmt.Errorf("site[%d] %q: domain %q is already used by site %q", i, site.Name, domain, owner)
+			}
+			seenDomain[domain] = site.Name
 		}
 		for j, p := range site.ExcludePaths {
 			if !strings.HasPrefix(p, "/") {
@@ -842,13 +880,50 @@ func (c *Config) GetEnabledRules() []RuleConfig {
 	return rules
 }
 
+// SaveToFile writes the config atomically: it marshals to a temp file in the
+// same directory, then renames over the target. A plain os.WriteFile truncates
+// in place, so a crash or a disk-full mid-write leaves a half-written, invalid
+// config -- and the next start fails to parse it. The rename is atomic on the
+// same filesystem, so readers see either the old or the new file, never a
+// partial one.
 func SaveToFile(path string, cfg *Config) error {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("write config: %w", err)
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".config-*.yaml.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp config: %w", err)
+	}
+	tmpName := tmp.Name()
+	// Best-effort cleanup if anything below fails before the rename.
+	defer func() { _ = os.Remove(tmpName) }()
+
+	// Preserve the target's mode when it exists (the runtime file is group
+	// writable so the nonroot container can rewrite it); otherwise 0644.
+	mode := os.FileMode(0o644)
+	if info, statErr := os.Stat(path); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp config: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temp config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp config: %w", err)
+	}
+	if err := os.Chmod(tmpName, mode); err != nil {
+		return fmt.Errorf("chmod temp config: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("replace config: %w", err)
 	}
 	return nil
 }

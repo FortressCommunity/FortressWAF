@@ -1,5 +1,10 @@
 # Component Architecture
 
+> **Design notes — not the source of truth.** This document describes the
+> intended design. For what the code actually does today, read the
+> [README](../README.md) and `deploy/config.yaml`. Where they disagree, the
+> README and the code win.
+
 This document provides in-depth coverage of FortressWAF's internal components: the detection engine, configuration system, REST API, rate limiter, IP reputation, session manager, and SIEM exporter.
 
 ## Engine
@@ -146,7 +151,8 @@ The `Manager` watches the config file directory for changes. On write events, it
 
 ## REST API
 
-**Package**: `internal/api/`
+**Package**: implemented in `cmd/proxy/` (the admin router). The former
+`internal/api/` package was removed; it was never wired into the binary.
 
 ### Server Architecture
 

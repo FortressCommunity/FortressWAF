@@ -1,5 +1,10 @@
 # ML Engine Architecture
 
+> **Design notes — not the source of truth.** This document describes the
+> intended design. For what the code actually does today, read the
+> [README](../README.md) and `deploy/config.yaml`. Where they disagree, the
+> README and the code win.
+
 > **Note:** The ML sidecar supports four models (anomaly detection, attack classification, bot detection, risk scoring) via separate API endpoints. Continuous learning, A/B testing, and the training pipeline described below require additional infrastructure and are not yet automated.
 
 FortressWAF includes an optional ML sidecar for anomaly detection. The ML engine scores requests based on learned patterns and can flag deviations from normal traffic.

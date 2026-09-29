@@ -1,3 +1,4 @@
+import os
 import time
 import logging
 from datetime import datetime, timezone
@@ -32,6 +33,62 @@ risk_scorer = RiskScorer()
 MODEL_VERSION = "2.0.0"
 MODEL_START_TIME = datetime.now(timezone.utc)
 
+# The training corpus the collector appends to. CORPUS_DIR can be overridden by
+# env so the sidecar and the Go collector agree on one location.
+CORPUS_DIR = os.environ.get(
+    "CORPUS_DIR",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "training", "data"),
+)
+MIN_TRAINING_SAMPLES = int(os.environ.get("MIN_TRAINING_SAMPLES", "40"))
+
+# Live model metrics, updated by a successful retrain.
+MODEL_METRICS: dict = {"classifier_accuracy": 0.0, "classifier_samples": 0, "last_trained": None}
+
+
+def load_training_corpus(data_dir: str):
+    """Load every labelled sample from the corpus.
+
+    Each subdirectory is an attack category whose name is the label; a
+    "no-attack" directory holds benign samples. Lines are payloads; a trailing
+    "\\t# ..." annotation (added by the live collector) is stripped. Returns
+    (texts, labels, per-category counts).
+    """
+    texts: list = []
+    labels: list = []
+    stats: dict = {}
+
+    if not os.path.isdir(data_dir):
+        return texts, labels, stats
+
+    for category in sorted(os.listdir(data_dir)):
+        cat_path = os.path.join(data_dir, category)
+        if not os.path.isdir(cat_path):
+            continue
+        count = 0
+        for fname in sorted(os.listdir(cat_path)):
+            if not fname.endswith((".txt", ".json", ".csv")):
+                continue
+            fpath = os.path.join(cat_path, fname)
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                    for raw in f:
+                        line = raw.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if "\t#" in line:
+                            line = line.split("\t#", 1)[0].strip()
+                        if not line:
+                            continue
+                        texts.append(line)
+                        labels.append(category)
+                        count += 1
+            except OSError as e:
+                logger.warning(f"could not read {fpath}: {e}")
+        if count:
+            stats[category] = count
+    return texts, labels, stats
+
+
 REQUEST_COUNT = prometheus_client.Counter(
     "waf_requests_total", "Total WAF requests", ["endpoint", "method", "status"]
 )
@@ -62,19 +119,41 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# The sidecar is an internal service: only the Go proxy calls it, over the
+# container network. It is not a browser-facing API and serves no cookies, so
+# cross-origin access is denied outright rather than opened up with a wildcard.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[],
+    allow_credentials=False,
+    allow_methods=["POST", "GET"],
+    allow_headers=["Content-Type"],
 )
+
+# Cap the request body before FastAPI parses it. The proxy already limits what
+# it forwards, but the sidecar must not trust that: an attacker with a direct
+# route to :8000 could otherwise make it buffer an unbounded body.
+MAX_REQUEST_BYTES = 10 * 1024 * 1024  # 10 MiB
+
+
+@app.middleware("http")
+async def limit_body_size(request: Request, call_next):
+    length = request.headers.get("content-length")
+    if length is not None:
+        try:
+            if int(length) > MAX_REQUEST_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={"error": "payload too large"},
+                )
+        except ValueError:
+            return JSONResponse(status_code=400, content={"error": "invalid content-length"})
+    return await call_next(request)
 
 
 @app.middleware("http")
 async def request_logging_middleware(request: Request, call_next):
     start_time = time.time()
-    _ = await request.body()
     try:
         response = await call_next(request)
     except Exception as e:
@@ -272,40 +351,124 @@ async def model_status():
 
 @app.post("/v1/model/retrain")
 async def retrain_model(config: RetrainConfig = RetrainConfig()):
-    try:
-        logger.info(f"Retraining triggered with config: {config}")
+    """Retrain the classifier on the on-disk corpus, adopting the new model only
+    if it is at least as good as the current one.
 
-        dummy_anomaly = np.random.randn(100, 38)
-        anomaly_detector.partial_fit(dummy_anomaly)
+    Data quality is enforced upstream: the collector only writes high-confidence
+    blocks, labelled by rule family. This endpoint refuses to train on a corpus
+    too small to judge, and refuses to keep a model that scores worse than what
+    is already loaded -- a bad batch cannot degrade the live model.
+    """
+    texts, labels, stats = load_training_corpus(CORPUS_DIR)
+    if len(texts) < MIN_TRAINING_SAMPLES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"corpus has {len(texts)} samples, need at least "
+                f"{MIN_TRAINING_SAMPLES} to train a reliable model"
+            ),
+        )
 
-        dummy_bot = np.random.randn(50, 30)
-        dummy_labels = np.random.randint(0, 2, 50)
-        bot_detector.train(dummy_bot, dummy_labels)
+    # Score the candidate before adopting it.
+    candidate_acc = attack_classifier.evaluate_fallback(texts, labels)
+    if candidate_acc <= 0.0:
+        raise HTTPException(
+            status_code=422,
+            detail="could not score the candidate model (too few classes or samples per class)",
+        )
 
-        dummy_risk = np.random.randn(50, 30)
-        dummy_risk_labels = np.random.randint(0, 100, 50)
-        risk_scorer.train(dummy_risk, dummy_risk_labels)
+    current = MODEL_METRICS.get("classifier_accuracy", 0.0)
+    result = {
+        "status": "rejected",
+        "reason": "",
+        "candidate_accuracy": round(candidate_acc, 4),
+        "current_accuracy": round(current, 4),
+        "samples": len(texts),
+        "by_category": stats,
+    }
 
-        MODEL_HEALTH.labels(model_name="anomaly").set(1)
-        MODEL_HEALTH.labels(model_name="classifier").set(1)
-        MODEL_HEALTH.labels(model_name="bot_detector").set(1)
-        MODEL_HEALTH.labels(model_name="risk_scorer").set(1)
+    # Only adopt when the candidate is not worse than the incumbent. A first
+    # train (current == 0) is always adopted.
+    if current > 0 and candidate_acc + 1e-9 < current:
+        result["reason"] = (
+            f"candidate accuracy {candidate_acc:.3f} is below the incumbent "
+            f"{current:.3f}; kept the existing model"
+        )
+        logger.warning(f"retrain rejected: {result['reason']}")
+        return JSONResponse(status_code=200, content=result)
 
-        return {
-            "status": "success",
-            "message": "Models retrained successfully",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "details": {
-                "anomaly_detector": f"{anomaly_detector.trained_samples} samples",
-                "classifier": attack_classifier.version,
-                "bot_detector": "trained",
-                "risk_scorer": "trained",
-            },
-        }
+    pipeline = attack_classifier.build_candidate(texts, labels)
+    attack_classifier.adopt(pipeline)
+    MODEL_METRICS["classifier_accuracy"] = candidate_acc
+    MODEL_METRICS["classifier_samples"] = len(texts)
+    MODEL_METRICS["last_trained"] = datetime.now(timezone.utc).isoformat()
+    MODEL_HEALTH.labels(model_name="classifier").set(1)
 
-    except Exception as e:
-        logger.error(f"Retrain error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    result["status"] = "adopted"
+    result["reason"] = "candidate is at least as accurate as the incumbent"
+    logger.info(f"retrain adopted: acc={candidate_acc:.3f} on {len(texts)} samples")
+    return result
+
+
+@app.get("/v1/model/training-status")
+async def training_status():
+    """Report what the corpus holds and how the live model scored, so the
+    console can show training health honestly."""
+    texts, labels, stats = load_training_corpus(CORPUS_DIR)
+    return {
+        "corpus_dir": CORPUS_DIR,
+        "total_samples": len(texts),
+        "by_category": stats,
+        "min_required": MIN_TRAINING_SAMPLES,
+        "classifier_accuracy": round(MODEL_METRICS.get("classifier_accuracy", 0.0), 4),
+        "classifier_samples": MODEL_METRICS.get("classifier_samples", 0),
+        "last_trained": MODEL_METRICS.get("last_trained"),
+        "model_version": attack_classifier.version,
+        "ready_to_train": len(texts) >= MIN_TRAINING_SAMPLES,
+    }
+
+
+@app.post("/v1/model/retrain-legacy-placeholder")
+async def retrain_placeholder(config: RetrainConfig = RetrainConfig()):
+    # Kept only for the demonstration opt-in; the real path is /v1/model/retrain.
+    if os.environ.get("FORTRESSWAF_ALLOW_PLACEHOLDER_RETRAIN") != "1":
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "placeholder retraining disabled; set "
+                "FORTRESSWAF_ALLOW_PLACEHOLDER_RETRAIN=1 to run the random-data "
+                "warm-up for demonstration only"
+            ),
+        )
+
+    logger.warning("placeholder retrain running on random data (demonstration only)")
+    dummy_anomaly = np.random.randn(100, 38)
+    anomaly_detector.partial_fit(dummy_anomaly)
+
+    dummy_bot = np.random.randn(50, 30)
+    dummy_labels = np.random.randint(0, 2, 50)
+    bot_detector.train(dummy_bot, dummy_labels)
+
+    dummy_risk = np.random.randn(50, 30)
+    dummy_risk_labels = np.random.randint(0, 100, 50)
+    risk_scorer.train(dummy_risk, dummy_risk_labels)
+
+    MODEL_HEALTH.labels(model_name="anomaly").set(1)
+    MODEL_HEALTH.labels(model_name="classifier").set(1)
+    MODEL_HEALTH.labels(model_name="bot_detector").set(1)
+    MODEL_HEALTH.labels(model_name="risk_scorer").set(1)
+
+    return {
+        "status": "success",
+        "message": "placeholder retrain complete (random data, demonstration only)",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "details": {
+            "anomaly_detector": f"{anomaly_detector.trained_samples} samples",
+            "classifier": attack_classifier.version,
+            "bot_detector": "trained",
+            "risk_scorer": "trained",
+        },
+    }
 
 
 if __name__ == "__main__":

@@ -37,7 +37,7 @@ function bucketByMinute(entries: AuditEntry[], buckets = 30) {
 function topRuleFamilies(entries: AuditEntry[], limit = 6) {
   const counts = new Map<string, number>()
   for (const ent of entries) {
-    const ruleID = ent.metadata.split(':')[0].trim()
+                      const ruleID = (ent.metadata ?? '').split(':')[0].trim()
     if (ruleID) counts.set(ruleID, (counts.get(ruleID) ?? 0) + 1)
   }
   return [...counts.entries()]
@@ -145,7 +145,9 @@ export default function OverviewPage() {
         inspectors: insp?.inspectors ?? [],
       }
     },
-    5_000,
+    // 2s keeps the security-event feed feeling live at the booth; the demo
+    // backend is local so the load is negligible.
+    2_000,
   )
 
   const status = data?.status ?? null
@@ -237,7 +239,7 @@ export default function OverviewPage() {
               {series.map((point, i) => (
                 <div
                   key={i}
-                  className="flex-1 rounded-t-[3px] bg-primary/80 transition-colors hover:bg-primary"
+                  className="flex-1 rounded-t-[3px] bg-primary/80 transition-colors hover:bg-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                   style={{
                     height: `${Math.max(2, (point.value / Math.max(1, ...series.map((s) => s.value))) * 100)}%`,
                     minWidth: '4px',
@@ -300,7 +302,7 @@ export default function OverviewPage() {
                   </TableHeader>
                   <TableBody>
                     {recent.map((ent) => {
-                      const ruleID = ent.metadata.split(':')[0].trim()
+    const ruleID = (ent.metadata ?? '').split(':')[0].trim()
                       return (
                         <TableRow key={ent.id}>
                           <TableCell className="text-xs font-mono text-muted-foreground whitespace-nowrap">

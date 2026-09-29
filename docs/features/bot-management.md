@@ -1,5 +1,10 @@
 # Bot Management
 
+> **Design notes — not the source of truth.** This document describes the
+> intended design. For what the code actually does today, read the
+> [README](../README.md) and `deploy/config.yaml`. Where they disagree, the
+> README and the code win.
+
 > **Status: Experimental** — Pattern-based bot detection is implemented. Fingerprinting, CAPTCHA, and JS challenge integration are documented as reference design and on the roadmap.
 
 FortressWAF provides bot detection capabilities to distinguish between legitimate human users, good bots, and malicious automated traffic.

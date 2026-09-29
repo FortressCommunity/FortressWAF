@@ -35,20 +35,28 @@ func NewAPIProtection(devMode bool) *APIProtection {
 		regexp.MustCompile(`(?i)__typename`),
 	}
 
+	// Sensitive paths are matched on whole path segments. The earlier patterns
+	// matched anywhere in the path, so /blog/administrator-tips, /information,
+	// /configuration, and /user/admin-profile were all blocked as if they were
+	// admin/config endpoints. A segment boundary (start of path, "/", or end)
+	// is what distinguishes /admin from /administrator-tips.
 	p.sensitivePaths = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)/api/v?\d*/?$`),
-		regexp.MustCompile(`(?i)/swagger|/docs|/openapi|/api-docs`),
-		regexp.MustCompile(`(?i)/graphql`),
-		regexp.MustCompile(`(?i)/grpc`),
-		regexp.MustCompile(`(?i)/.env|/config|/debug|/admin`),
+		regexp.MustCompile(`(?i)^/api/v?\d*/?$`),
+		regexp.MustCompile(`(?i)(?:^|/)(?:swagger|openapi|api-docs)(?:/|$)`),
+		regexp.MustCompile(`(?i)(?:^|/)docs(?:=.*)?(?:/|$)`),
+		regexp.MustCompile(`(?i)(?:^|/)graphql(?:/|$)`),
+		regexp.MustCompile(`(?i)(?:^|/)grpc(?:/|$)`),
+		regexp.MustCompile(`(?i)(?:^|/)\.env(?:/|$)`),
+		regexp.MustCompile(`(?i)(?:^|/)(?:config|debug|admin)(?:/|$)`),
 		// /health is intentionally left out: it is the standard uptime
 		// probe that load balancers and the WAF itself use, so blocking it on
 		// the protected site breaks health checks. /actuator, /info and
 		// /metrics still expose internals worth hiding.
-		regexp.MustCompile(`(?i)/actuator|/info|/metrics`),
-		regexp.MustCompile(`(?i)/wp-admin|/administrator|/backup`),
-		regexp.MustCompile(`(?i)/\.git|/\.svn|/\.hg`),
-		regexp.MustCompile(`(?i)/\*|/\.\*`),
+		regexp.MustCompile(`(?i)(?:^|/)(?:actuator|info|metrics)(?:/|$)`),
+		regexp.MustCompile(`(?i)(?:^|/)(?:wp-admin|wp-login|administrator|backup)(?:/|$)`),
+		regexp.MustCompile(`(?i)(?:^|/)\.(?:git|svn|hg)(?:/|$)`),
+		// A literal "*" or ".*" path segment (wildcard probing).
+		regexp.MustCompile(`(?:^|/)(?:\.)?\*(?:/|$)`),
 	}
 
 	return p

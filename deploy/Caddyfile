@@ -13,7 +13,18 @@
 }
 
 fort.tkjt3yapera.my.id {
-	reverse_proxy dashboard:3000
+	# The admin API is served on the SAME host as the dashboard, under /api/*.
+	# The browser then talks to one origin, so there is no second hostname
+	# (admin-fort...) that can fail independently — a single point that broke
+	# the dashboard when that hostname went through Cloudflare or resolved to
+	# only IPv4. Caddy strips the /api prefix is NOT done: FortressWAF already
+	# serves /api/v1/..., so the path is forwarded as-is.
+	handle /api/* {
+		reverse_proxy fortresswaf:8443
+	}
+	handle {
+		reverse_proxy dashboard:3000
+	}
 }
 
 # Grafana is served straight from its container, not through the WAF: its

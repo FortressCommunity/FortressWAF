@@ -14,7 +14,7 @@ import { formatDate } from '@/lib/utils'
 import type { AuditEntry, AuditResponse } from '@/types'
 
 export default function AuditPage() {
-  const { data, loading, error, reload } = usePolling<AuditResponse>(() => api.audit(), 5_000)
+  const { data, loading, error, reload } = usePolling<AuditResponse>(() => api.audit(), 2_000)
   const [filter, setFilter] = React.useState('')
 
   // Memoized so the derived array keeps its identity between polls and the
@@ -31,10 +31,10 @@ export default function AuditPage() {
     if (!q) return sorted
     return sorted.filter(
       (e) =>
-        e.metadata.toLowerCase().includes(q) ||
-        e.actor_ip.toLowerCase().includes(q) ||
-        e.resource.toLowerCase().includes(q) ||
-        e.action.toLowerCase().includes(q),
+        (e.metadata ?? '').toLowerCase().includes(q) ||
+        (e.actor_ip ?? '').toLowerCase().includes(q) ||
+        (e.resource ?? '').toLowerCase().includes(q) ||
+        (e.action ?? '').toLowerCase().includes(q),
     )
   }, [entries, filter])
 

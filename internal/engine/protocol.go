@@ -19,11 +19,19 @@ func NewProtocolAnomaly(devMode bool) *ProtocolAnomaly {
 	return &ProtocolAnomaly{
 		devMode:     devMode,
 		malformedRE: regexp.MustCompile(`[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]`),
+		// Only genuinely dangerous or unexpected verbs are flagged. GET, HEAD,
+		// POST, PUT, PATCH, DELETE, and OPTIONS are ordinary HTTP: browsers send
+		// OPTIONS as a CORS preflight and HEAD for metadata on every page load,
+		// and REST APIs use PUT/PATCH/DELETE as a matter of course. Blocking
+		// those broke normal browsing (a phone opening a web app tripped the
+		// OPTIONS preflight before it did anything). TRACE and TRACK echo the
+		// request back (XST), CONNECT opens a tunnel, and the WebDAV verbs below
+		// have no business reaching a typical web app.
 		verbTampering: []string{
-			"CONNECT", "TRACE", "TRACK", "PUT", "DELETE",
-			"PATCH", "PROPFIND", "PROPPATCH", "MKCOL",
-			"MOVE", "COPY", "LOCK", "UNLOCK", "SEARCH",
-			"OPTIONS", "HEAD", "BIND", "REBIND", "UNBIND",
+			"CONNECT", "TRACE", "TRACK",
+			"PROPFIND", "PROPPATCH", "MKCOL",
+			"MOVE", "COPY", "LOCK", "UNLOCK",
+			"BIND", "REBIND", "UNBIND",
 			"ACL", "REPORT", "VERSION-CONTROL", "CHECKIN",
 			"CHECKOUT", "UNCHECKOUT", "MERGE", "BASELINE-CONTROL",
 			"MKCALENDAR", "MKREDIRECTREF", "UPDATEREDIRECTREF",

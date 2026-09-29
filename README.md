@@ -51,7 +51,7 @@ Every module below is a built-in inspector. Those marked *stable* are enabled by
 | Path traversal & parser hardening (encoding, null bytes) | PARSER_001+ | **stable** |
 | HTTP request smuggling (CL.TE / TE.CL) | DSYNC_001+ | **stable** |
 | Protocol anomalies (verb tampering, header smuggling, malformed requests) | PROT001+ | **stable** |
-| Bot detection (signature list; `curl` is listed as a bad bot) | BOT+ | **stable** |
+| Bot detection (attack-tool signatures; ordinary clients like `curl`, `axios`, and real browsers are not flagged) | BOT+ | **stable** |
 | DDoS protection (slow loris, slow POST) | DDoS000+ | **stable** |
 | Credential protection (brute force, stuffing, spray, lockout) | CRED+ | **stable** |
 | File upload validation (MIME, extension, magic bytes) | UPL001+ | **stable** |
@@ -64,14 +64,17 @@ Every module below is a built-in inspector. Those marked *stable* are enabled by
 | JWT / OAuth 2.0 introspection / mTLS / CAPTCHA | — | implemented, off by default |
 | Adaptive challenge (JS / CAPTCHA interstitial) | — | experimental, off by default |
 | Behavioural scoring (velocity, path entropy, reputation) | — | experimental, off by default |
-| Response body inspection (data leakage) | — | **not implemented** — registered stub, `Inspect()` is a no-op |
+| Response body inspection (data leakage) | LEAK001–008 | implemented — blocks responses leaking private keys, cloud keys, JWTs, DB DSNs, password hashes, or stack traces |
 | eBPF telemetry, WASM sandbox | — | **not implemented** — stubs behind build tags |
 
 Detection is measured, not assumed: the whole `ml-engine` training corpus
-(1,126 payloads across 11 categories) is replayed through the engine in
-`tests/unit/payload_corpus_test.go`. Measured detection rates: XXE 100%, XSS
-99%, deserialization 97%, webshell 80%, LDAP 78%, SQLi 78%, command injection
-66%, SSTI 64%, RCE 62%, LFI 59%, path traversal 57%.
+(1,402 payloads across 15 categories) is replayed through the engine in
+`tests/unit/payload_corpus_test.go`, which fails if any category drops below a
+documented floor. Measured detection rates: XXE 100%, XSS 99%, deserialization
+97%, path traversal 87%, webshell 80%, LDAP 78%, SQLi 77%, command injection
+66%, LFI 65%, SSTI 64%, RCE 62%. Three corpus categories (`csrf`, `ssrf`,
+`open-redirect`) are deliberately excluded from the rate table — see
+[Known Limitations](#known-limitations) for why.
 
 ### Observability
 
@@ -84,17 +87,28 @@ Detection is measured, not assumed: the whole `ml-engine` training corpus
 | SIEM export (Elasticsearch, Splunk HEC) | implemented, off by default |
 | Grafana dashboards (`deploy/monitoring/grafana/dashboards/*.json`) | **stable** — two dashboards (Overview, Security) provisioned and rendered against live Prometheus data; see caveat in [Known Limitations](#known-limitations) |
 | ML / compliance metrics in Grafana | **not available** — the exporter emits no such series, so the two dashboards that queried them were removed rather than left rendering empty panels |
+| Protected-domain management with DNS verification | **stable** — add a domain in the console; it is only protected after the WAF itself resolves its A/AAAA record and confirms it points at this server |
+| Full request log (IP, browser, headers) | **stable** — every inspected request is recorded with method, path, source IP, parsed browser/device, and full headers (credentials redacted) |
+| IP ban / unban | **stable** — banned addresses are refused before inspection, on every site; bans can expire |
+| Live training corpus + validated retrain | **stable** — high-confidence blocks are labelled by rule and appended to the corpus; the sidecar retrains and keeps the new model only if it scores at least as well |
 
 ### Management API
 
 The admin API (`/api/v1` on the admin port) exposes auth/login, health, status,
-config read/reload, sites, rules, compliance assessment, and the audit log. It
-requires a bearer token obtained from `POST /api/v1/auth/login`.
+config read/reload, sites, rules, compliance assessment, the audit log, plus the
+operator endpoints: `metrics/snapshot`, `analytics`, `traffic`, `config/detail`,
+`alerts`, `domains` (with `POST` add + DNS verification), `bans`, and
+`training/status`. It requires a bearer token obtained from
+`POST /api/v1/auth/login`.
 
 Access controls, all verified live against the running stack:
 
 * **Keys are compared in constant time** (`crypto/subtle`) at login and on every
   authenticated request, so response timing does not reveal a correct prefix.
+* **Login requires username AND password.** With two configured keys the first
+  is the username and the second the password, and both must match; a correct
+  username with a wrong password is rejected. (A single key is accepted only
+  when it appears in both fields.)
 * **Failed logins are rate-limited.** Five wrong attempts per source address in
   a minute lock that address out for fifteen minutes, returning `429` with
   `Retry-After`. A locked-out caller is refused *before* the credential check,
@@ -109,6 +123,11 @@ Access controls, all verified live against the running stack:
   with one header, and the audit log recorded the spoofed address.
 * **CORS is an allow list**, not `*`: only origins under
   `admin.cors_origins` may read authenticated API responses from a browser.
+* **Admin request bodies are capped** at 1 MiB (`http.MaxBytesReader`); an
+  oversized body gets `413` instead of being buffered.
+* **Credentials are never logged.** The request log redacts any header whose
+  name looks like a credential (`Authorization`, `Cookie`, `X-API-Key`, and
+  anything containing `token`/`secret`/`auth`/…), case-insensitively.
 
 ---
 
@@ -139,6 +158,22 @@ stack (proxy + Postgres + ML sidecar + dashboard) instead:
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
+To rebuild from source and redeploy safely — recreating the source images,
+restarting Caddy so its service-DNS cache does not go stale, and verifying the
+browser path (page + login + every admin API) — use the deploy script:
+
+```bash
+sudo bash scripts/deploy.sh            # rebuild everything, redeploy, verify
+sudo SKIP_BUILD=1 bash scripts/deploy.sh   # recreate + verify only
+```
+
+> Why Caddy matters: when a service container is recreated, Caddy can hold a
+> stale address for it and start returning `502` for the admin API, which makes
+> the dashboard look unreachable even though its pages load. `scripts/deploy.sh`
+> restarts Caddy after every recreate and re-checks the full path. If the
+> dashboard ever returns `502`, run `make restart-caddy` (or
+> `docker compose -f deploy/docker-compose.yml restart caddy`).
+
 > Verified end to end in this sandbox: `go build`, `go vet`, `go test ./...`,
 > a live smoke test of the binary, and a full `docker compose up` of the
 > proxy, Postgres, ML sidecar, dashboard, and monitoring stack — every service
@@ -151,7 +186,10 @@ Minimal config (what `deploy/config.yaml` actually contains, abridged):
 ```yaml
 admin:
   enabled: true
-  api_keys: [fortress-demo-admin]   # any value here logs in as admin
+  # Two entries = username + password, and BOTH must match to log in. The real
+  # values come from deploy/.env (gitignored) via these ${...} refs, so they
+  # never land in the repository.
+  api_keys: [${ADMIN_EMAIL}, ${ADMIN_PASSWORD}]
 
 sites:
   - name: default
@@ -183,15 +221,20 @@ request answers 403 with a JSON body naming the rule.
 ### Public deployment
 
 `deploy/docker-compose.yml` runs Caddy as the TLS edge and routes each host to
-its container; the WAF's own listeners are bound to loopback. The live instance
-is reachable at:
+its container; the WAF's own listeners are bound to loopback. The dashboard and
+its admin API are served on **one origin** (the dashboard host serves `/` and
+`/api/*`), so a browsing phone talks to a single hostname. The live instance is
+reachable at:
 
 | Host | What it serves | Credentials |
 | --- | --- | --- |
-| `fort.tkjt3yapera.my.id` | Dashboard (the WAF's own UI) | any email + `fortress-demo-admin` |
-| `admin-fort.tkjt3yapera.my.id` | Admin API the dashboard calls | `Authorization: Bearer fortress-demo-admin` |
+| `fort.tkjt3yapera.my.id` | Dashboard + admin API (`/api/*`) | email + password from `deploy/.env` |
 | `demo.tkjt3yapera.my.id` | Vulnerable demo app, behind the WAF | app login: `administrator` / `administrator` |
 | `grafana.tkjt3yapera.my.id` | Grafana, served around the WAF | `admin` / `admin` -- change it via `GRAFANA_PASSWORD` in `deploy/.env` |
+
+> The admin credentials are **not** in this repository. Set `ADMIN_EMAIL` and
+> `ADMIN_PASSWORD` in `deploy/.env` (gitignored); `deploy/config.yaml` references
+> them via `${ADMIN_EMAIL}` / `${ADMIN_PASSWORD}`.
 
 ```bash
 curl -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36' \
@@ -227,7 +270,7 @@ curl -H "User-Agent: Mozilla/5.0 ..." "http://localhost:8080/cmd?c=;id"
 # 4. Read the audit log (hash-chained, tamper-evident)
 TOKEN=$(curl -s -X POST http://localhost:8443/api/v1/auth/login \
         -H "Content-Type: application/json" \
-        -d '{"email":"a@b.com","password":"fortress-demo-admin"}' | sed 's/.*"token":"\([^"]*\)".*/\1/')
+        -d '{"email":"admin@example.com","password":"<your password>"}' | sed 's/.*"token":"\([^"]*\)".*/\1/')
 curl -H "Authorization: Bearer $TOKEN" "http://localhost:8443/api/v1/audit?limit=5"
 
 # 5. Ask the compliance module what it can actually verify
@@ -276,21 +319,26 @@ flowchart LR
 cmd/proxy/           WAF server entry point (flags, admin router, wiring)
 internal/
   engine/            Detection pipeline (all inspectors live here)
-  config/            YAML config with live reload
-  compliance/        Control verification against live runtime state
+  config/            YAML config with live reload (atomic save)
+  compliance/        Control verification + hash-chained audit log
+  sites/             Protected-domain management with DNS verification
+  blocklist/         IP ban / unban store
+  traincorpus/       Live training-corpus collector (high-confidence blocks)
+  uaparse/           User-Agent -> browser / OS / device summary
   siem/              SIEM event export
-  ml/                Client for the Python ML sidecar
+  ml/                Client for the Python ML sidecar (not called by cmd/proxy)
 dashboard/           Web dashboard (Next.js)
 ml-engine/           ML sidecar (Python/FastAPI) — see status below
-deploy/              docker-compose, config, monitoring
+deploy/              docker-compose, config, monitoring, Caddyfile
 docs/                Design documentation (see caveat in Known Limitations)
 ```
 
 `internal/` also contains packages that compile but are **not wired into the
-proxy**: `api`, `billing`, `tenant`, `geo`, `ratelimit`, `reputation`, `session`,
-`rules`. Nothing in `cmd/proxy` imports them. They are left in place rather than
-deleted so earlier documentation stays navigable; do not read them as working
-features.
+proxy**: `billing`, `tenant`, `geo`, `ratelimit`, `reputation`, `session`.
+Nothing in `cmd/proxy` imports them; they are leftover scaffolding and should not
+be read as working features. (The former `internal/api` and `internal/rules`
+packages were deleted — `internal/api` carried an auth bypass and an
+unauthenticated WebSocket that nothing used.)
 
 ---
 
@@ -364,23 +412,37 @@ Stated plainly, because hiding them would be worse than having them:
 4. **Rules are not loaded from disk.** The bundled `rules/` directory is
    unused; detection comes entirely from the built-in inspectors. A config
    glob for rule files parses but is not read.
-5. **Dead code is present** (see the architecture note): `internal/api`,
-   `billing`, `tenant`, `geo`, `ratelimit`, `reputation`, `session`, `rules`.
-   None of them are imported by `cmd/proxy`.
-6. **Response body inspection is a no-op stub** — registered, does nothing.
-7. **`docs/` is aspirational.** The documentation directory describes the
+5. **Dead code is present** (see the architecture note): `billing`, `tenant`,
+   `geo`, `ratelimit`, `reputation`, `session`. None of them are imported by
+   `cmd/proxy`. (The previously-listed `internal/api` and `internal/rules` were
+   removed: `internal/api` carried an auth bypass and an unauthenticated
+   WebSocket that nothing used, so the whole package was deleted rather than
+   left as a landmine.)
+6. **Response body inspection detects leaks, within a 1 MiB window.** The
+   upstream response is buffered (up to 1 MiB) and scanned for eight classes of
+   leaked secret before any byte reaches the client; a hit is blocked with 502
+   and logged. Responses larger than the window are flushed and streamed past
+   that point uninspected. It is pattern-based, not entropy-based, so an
+   obscured or non-standard secret can still slip through.
+7. **The dashboard's admin token lives in `sessionStorage`.** It is scoped to
+   the tab and cleared on close, and the dashboard ships a strict
+   Content-Security-Policy with no remote script origins, so the XSS path that
+   would expose the token is closed. It is still JavaScript-readable; an
+   httpOnly session cookie from the admin API is the follow-up that would
+   remove that entirely.
+8. **`docs/` is aspirational.** The documentation directory describes the
    intended product, including billing, multi-tenancy, and an
    enterprise/community feature split that the code does not implement. Trust
    this README and `deploy/config.yaml` for what actually works; read `docs/`
    as design notes.
-8. **The Docker stack runs, and only what it runs is claimed.** The stack
+9. **The Docker stack runs, and only what it runs is claimed.** The stack
    (proxy + Postgres + ML sidecar + dashboard) and the separate monitoring
    stack (Prometheus + Grafana + Loki + Alertmanager) were both built and
    started end to end; all healthchecks pass. Two caveats remain: Alertmanager
    receivers point at a local sink (`http://127.0.0.1:5001`) because real
    delivery needs SMTP/Slack credentials, and the monitoring stack is a
    second `docker compose` file that must be brought up separately.
-9. **Untrained-model honesty:** detection rates in the feature table are
+10. **Untrained-model honesty:** detection rates in the feature table are
    measured against a payload corpus, which is a lab measurement — not proof
    of performance against a skilled attacker with bypass tooling.
 

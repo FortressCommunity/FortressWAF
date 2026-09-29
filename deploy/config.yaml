@@ -15,8 +15,11 @@
 #                          code path consumes them (the packages behind them
 #                          are not wired into the proxy). Omitted rather than
 #                          imply working features.
-#   * response_inspect   - the inspector is registered but its Inspect() is a
-#                          no-op stub, so it is disabled here.
+#   * response_inspect   - scans the upstream response body for leaked
+#                          secrets (private keys, cloud keys, JWTs, DB DSNs,
+#                          password hashes, stack traces). Logs and counts
+#                          hits by default; set block: true to abort a leaking
+#                          response with 502. Only the first 1 MiB is scanned.
 #   * cache / alerting / compliance / http3 / plugins / traffic / dry_run /
 #     secrets / monitoring / rate_limiting / database
 #                        - no matching config struct at all; they were
@@ -32,10 +35,12 @@
 admin:
   enabled: true
   port: 8443
-  # Dashboard credentials: any value in this list logs in as admin.
-  # CHANGE THIS before the project leaves your laptop.
+  # Dashboard credentials. The login form accepts either value as the email OR
+  # the password (compared in constant time). The real values live in .env,
+  # which is gitignored, so they never land in the repository.
   api_keys:
-    - fortress-demo-admin
+    - ${ADMIN_EMAIL}
+    - ${ADMIN_PASSWORD}
   # Origins allowed to call this admin API from a browser. The dashboard is
   # served on port 3000; without an entry here its requests are blocked by
   # the browser's same-origin policy. Add the host/port you present from.
@@ -127,7 +132,12 @@ behavioral:
 
 # Registered but currently a no-op stub; see header comment.
 response_inspect:
-  enabled: false
+  enabled: true
+  inspect_body: true
+  # Monitor by default: a leak is logged and counted, not blocked. Response
+  # inspection scans content, so a match in legitimate documentation or a code
+  # sample must not take a page down. Set block: true to turn hits into a 502.
+  block: false
 
 # eBPF telemetry needs CAP_BPF and a host NIC, unavailable in the container.
 ebpf:
@@ -225,3 +235,21 @@ siem:
   export_interval: 10s
   batch_size: 100
   exporters: []
+
+# --- Server identity + live training corpus ---------------------------------
+# expected_ips: a domain added through the console must resolve to one of these
+# addresses before it is protected. Set this to the public IP of this server so
+# DNS ownership is actually verified (looked up by the WAF itself, never
+# trusted from the client). Empty means "only require that the domain resolves".
+server:
+  expected_ips:
+    - 103.253.147.149
+    - 2400:6180:0:d2:0:3:2f88:4000
+
+# training.corpus_dir is the shared volume the ML sidecar also reads. When
+# enabled, the WAF appends only high-confidence attack payloads (named attack
+# families, score >= 70), labelled by rule, to the corpus; the sidecar retrains
+# from it and refuses to keep a model that scores worse than the incumbent.
+training:
+  enabled: true
+  corpus_dir: /corpus
