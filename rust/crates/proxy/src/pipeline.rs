@@ -161,59 +161,228 @@ pub fn client_wants_json(ctx: &RequestContext) -> bool {
     false
 }
 
-/// The FortressWAF block page.
+/// The request id to show on a block page or in a block JSON body.
 ///
-/// Rendered entirely from the token spine ([`crate::tokens`]): semantic CSS
-/// custom properties, both light and dark modes, WCAG AA contrast, a lucide
-/// icon on the badge (never emoji), a `<main>` landmark, and plain-language
-/// copy with no em-dash flood. Rule name, path and request id are HTML-escaped
-/// so a crafted value cannot inject markup.
-pub fn block_page(ctx: &RequestContext, decision: &Decision) -> String {
+/// Prefer a client-supplied `X-Request-ID` for correlation when present;
+/// otherwise fall back to the WAF-generated id (`ctx.request_id`), which is the
+/// same id written to the audit log. Using only the header left this field
+/// blank for every ordinary client, which is what a browser is.
+pub fn block_request_id(ctx: &RequestContext) -> String {
+    let header = ctx.request_header("X-Request-ID");
+    if !header.is_empty() {
+        header.to_string()
+    } else {
+        ctx.request_id.clone()
+    }
+}
+
+/// Which kind of stop the client hit.
+///
+/// A ban, a flood, an attack match and a scanner are four different facts, and
+/// the page has to say which one it is. Collapsing them into one generic
+/// "blocked" page tells the client nothing and reads as a template.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopKind {
+    /// The address is on the operator ban list (a standing decision).
+    Banned,
+    /// A per-IP or per-endpoint rate limit was crossed (a flood).
+    Flood,
+    /// A request value matched an attack signature (SQLi, XSS, RCE, traversal).
+    Attack,
+    /// The client identified itself as known automation (scanner, bot tool).
+    Automation,
+    /// A challenge was issued; a real browser clears it, automation does not.
+    Challenge,
+}
+
+impl StopKind {
+    /// Classify a decision by its rule id. Rule-id prefixes are the stable
+    /// contract here: they are what the audit log and the corpus test key on.
+    pub fn from_decision(decision: &Decision) -> StopKind {
+        let id = decision.rule_id.as_str();
+        if id == "BAN001" || id.starts_with("BAN") {
+            StopKind::Banned
+        } else if id.starts_with("DDoS") || id.starts_with("GRPC") || id == "RATE" {
+            StopKind::Flood
+        } else if id.starts_with("BOT") || id.starts_with("JA3") {
+            StopKind::Automation
+        } else if decision.action == Action::Challenge {
+            StopKind::Challenge
+        } else {
+            StopKind::Attack
+        }
+    }
+
+    /// Plain words for the class of attempt, never the raw rule id. Rule ids
+    /// are operator vocabulary; `SQLI016` means nothing to the client.
+    fn attempt_label(self) -> &'static str {
+        match self {
+            StopKind::Banned => "address on the ban list",
+            StopKind::Flood => "rate limit",
+            StopKind::Attack => "attack signature",
+            StopKind::Automation => "automation signature",
+            StopKind::Challenge => "challenge",
+        }
+    }
+}
+
+/// The one-line, human name for a matched rule, used in the page's status line.
+/// Falls back to the class name when the decision carries no rule name.
+fn attempt_label(decision: &Decision) -> String {
+    if !decision.rule_name.is_empty() {
+        decision.rule_name.clone()
+    } else {
+        StopKind::from_decision(decision)
+            .attempt_label()
+            .to_string()
+    }
+}
+
+/// Render the calm-sentinel copy for a stop, as (headline, lead, detail).
+///
+/// One reason per line: the headline states the fact, the lead says what the
+/// WAF did with it, and the detail gives the client the one thing that is
+/// genuinely useful to it. No threats the WAF cannot substantiate, no numbers
+/// it does not hold.
+pub fn stop_copy(kind: StopKind) -> (&'static str, &'static str, &'static str) {
+    match kind {
+        StopKind::Banned => (
+            "This address is not being served",
+            "Requests from this address are refused at the edge. This is a standing \
+             decision, not a verdict on this one request, so retrying will not change it.",
+            "If you believe the address was added in error, give the operator the request \
+             id below. It is the same id written to the audit log.",
+        ),
+        StopKind::Flood => (
+            "This address is sending too fast",
+            "The request rate from this address crossed a configured limit. The WAF is \
+             pacing it rather than blocking it outright.",
+            "Wait for the interval shown, then resume at a lower rate. A steady client \
+             never reaches this limit.",
+        ),
+        StopKind::Attack => (
+            "This request carried an attack signature",
+            "A value in this request matched a known attack pattern, so it was not \
+             forwarded. The match is on the request, not on you as a client.",
+            "If this was ordinary input, quote the request id below. The operator can see \
+             exactly which value matched.",
+        ),
+        StopKind::Automation => (
+            "This client identified itself as automation",
+            "The User-Agent matches a known scanning or bot tool, so the request was held \
+             at the edge before it reached the application.",
+            "Automated clients that should be allowed need an allow-listed address on the \
+             WAF, not a different User-Agent.",
+        ),
+        StopKind::Challenge => (
+            "A quick check is required",
+            "A real browser clears this on its own in a moment. Nothing needs to be typed \
+             or clicked.",
+            "Automated clients cannot complete this check; route them through an \
+             allow-listed address instead.",
+        ),
+    }
+}
+
+/// The identity motif: a short status line every page carries, naming the WAF
+/// and the request id. It is the one element shared by block and challenge
+/// pages, so both surfaces speak in the same voice.
+fn sentinel_status_line(ctx: &RequestContext) -> String {
+    format!(
+        r#"<p class="sentinel">FortressWAF recorded this as <code>{id}</code></p>"#,
+        id = html_escape(&block_request_id(ctx))
+    )
+}
+
+/// The rate-limit page. Like [`block_page`], but it can state the real limit
+/// and the real wait, which are the only two numbers the client can act on.
+/// Both come from the caller, never from a literal in the markup.
+pub fn flood_page(ctx: &RequestContext, limit: i32, retry_after_secs: i64) -> String {
+    let (headline, lead, detail) = stop_copy(StopKind::Flood);
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Request blocked</title>
+<title>{headline}</title>
 <style>
 {css}</style>
 </head>
 <body>
-<main class="card" aria-labelledby="blocked-title">
-  <span class="badge">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-    Blocked by FortressWAF
-  </span>
-  <h1 id="blocked-title">Your request was blocked</h1>
-  <p>FortressWAF stopped this request because its content matched a known web
-     attack pattern, such as SQL injection, cross-site scripting, or command
-     injection. To keep the site safe, the request was not forwarded.</p>
-  <p>If you believe this is a mistake, for example you only typed ordinary text
-     into a form, contact the site administrator and quote the request ID below.</p>
-  <dl>
-    <dt>Reason</dt><dd>{rule_id}: {rule_name}</dd>
-    <dt>Severity</dt><dd>{severity}</dd>
-    <dt>Path</dt><dd>{path}</dd>
-    <dt>Request ID</dt><dd>{request_id}</dd>
-  </dl>
-  <p class="foot">FortressWAF, Web Application Firewall</p>
+<main class="card" aria-labelledby="stop-title">
+  <h1 id="stop-title">{headline}</h1>
+  <p class="lead">{lead}</p>
+  <p>{detail}</p>
+  <p class="meta">Limit: {limit} requests per second from this address</p>
+  <p class="meta">Retry after: {retry_after} seconds</p>
+  {status}
 </main>
 </body>
 </html>"#,
         css = crate::tokens::base_page_css(),
-        rule_id = html_escape(&decision.rule_id),
-        rule_name = html_escape(&decision.rule_name),
-        severity = html_escape(&decision.severity),
+        headline = html_escape(headline),
+        lead = html_escape(lead),
+        detail = html_escape(detail),
+        limit = limit,
+        retry_after = retry_after_secs,
+        status = sentinel_status_line(ctx),
+    )
+}
+
+/// The FortressWAF block page, rendered per stop kind.
+///
+/// Rendered from the token spine ([`crate::tokens`]): semantic CSS custom
+/// properties, both light and dark modes, WCAG AA contrast, a `<main>` landmark,
+/// and HTML-escaped values so a crafted rule name or path cannot inject markup.
+///
+/// Anti-slop notes (one reason per decision):
+/// - No eyebrow badge: the outcome is already the H1, so a pill restating it
+///   would be decoration.
+/// - The headline, lead and detail come from [`stop_copy`], so a ban, a flood
+///   and an attack match each read differently instead of sharing one template.
+/// - The one repeated element is the sentinel status line, which gives the
+///   block and challenge pages a shared identity.
+pub fn block_page(ctx: &RequestContext, decision: &Decision) -> String {
+    let kind = StopKind::from_decision(decision);
+    let (headline, lead, detail) = stop_copy(kind);
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{headline}</title>
+<style>
+{css}</style>
+</head>
+<body>
+<main class="card" aria-labelledby="stop-title">
+  <h1 id="stop-title">{headline}</h1>
+  <p class="lead">{lead}</p>
+  <p>{detail}</p>
+  <p class="meta">Matched: {attempt}</p>
+  <p class="meta">Path: {path}</p>
+  {status}
+</main>
+</body>
+</html>"#,
+        css = crate::tokens::base_page_css(),
+        headline = html_escape(headline),
+        lead = html_escape(lead),
+        detail = html_escape(detail),
+        attempt = html_escape(&attempt_label(decision)),
         path = html_escape(&ctx.path),
-        request_id = html_escape(ctx.request_header("X-Request-ID")),
+        status = sentinel_status_line(ctx),
     )
 }
 
 /// The FortressWAF challenge interstitial.
 ///
-/// Token-driven like the block page, with a `<noscript>` fallback that keeps
-/// the manual submit button usable when JavaScript is off.
+/// Shares the sentinel motif with the block page (same status line, same
+/// vocabulary). The copy states why a browser passes on its own, which is the
+/// only thing the client needs to know, and the `<noscript>` fallback keeps the
+/// manual control usable when JavaScript is off.
 pub fn challenge_page(ctx: &RequestContext) -> String {
     let mut token_bytes = [0u8; 16];
     let _ = getrandom::getrandom(&mut token_bytes);
@@ -225,22 +394,24 @@ pub fn challenge_page(ctx: &RequestContext) -> String {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Security check</title>
+<title>Quick check</title>
 <style>
 {css}.card{{text-align:center}}</style>
 </head>
 <body>
 <main class="card" aria-labelledby="challenge-title" aria-busy="true">
-  <h2 id="challenge-title">Security check</h2>
-  <p>Please wait while we verify your browser.</p>
+  <h1 id="challenge-title">A quick check is required</h1>
+  <p class="lead">A real browser clears this on its own in a moment. Nothing needs
+     to be typed or clicked.</p>
   <form id="cf-form" action="/__challenge" method="POST">
     <input type="hidden" name="challenge_token" value="{token}">
     <input type="hidden" name="original_path" value="{path}">
   </form>
   <noscript>
-    <p>JavaScript is required to pass this check automatically.</p>
-    <button type="submit" form="cf-form">Continue</button>
+    <p>JavaScript is off, so this check cannot run on its own.</p>
+    <button type="submit" form="cf-form">Continue without JavaScript</button>
   </noscript>
+  {status}
 </main>
 <script>
 setTimeout(function(){{
@@ -256,6 +427,7 @@ setTimeout(function(){{
         token = challenge_token,
         path = html_escape(&ctx.path),
         now = now,
+        status = sentinel_status_line(ctx),
     )
 }
 
@@ -513,9 +685,125 @@ mod tests {
             .with_rule_name("<script>alert</script>")
             .with_severity("critical");
         let page = block_page(&c, &d);
+        // The rule NAME is what the page shows (the raw rule id is operator
+        // vocabulary and is deliberately not printed). It must be escaped.
         assert!(page.contains("&lt;script&gt;alert&lt;/script&gt;"));
         assert!(!page.contains("<script>alert</script>"));
-        assert!(page.contains("XSS001"));
+    }
+
+    #[test]
+    fn block_page_shows_a_request_id_without_a_client_header() {
+        // Regression: the page used to render only the client's X-Request-ID
+        // header, which is absent for ordinary browsers, so the field was
+        // blank. It must fall back to the WAF-generated id.
+        let c = ctx();
+        assert_eq!(c.request_header("X-Request-ID"), "");
+        let d = Decision::new(Action::Block, 90.0)
+            .with_rule_id("SQLI016")
+            .with_severity("high");
+        let page = block_page(&c, &d);
+        // The generated id appears in the page, and the field is not empty.
+        assert!(
+            page.contains(&c.request_id) && !c.request_id.is_empty(),
+            "block page must contain the generated request id"
+        );
+        assert!(
+            page.contains("class=\"sentinel\""),
+            "the sentinel status line is the shared identity motif"
+        );
+    }
+
+    #[test]
+    fn each_stop_kind_gets_its_own_copy() {
+        let c = ctx();
+        let kinds = [
+            ("BAN001", "This address is not being served"),
+            ("DDoS001", "This address is sending too fast"),
+            ("SQLI016", "This request carried an attack signature"),
+            ("BOT004", "This client identified itself as automation"),
+        ];
+        let mut headlines = std::collections::HashSet::new();
+        for (rule_id, expected_headline) in kinds {
+            let d = Decision::new(Action::Block, 90.0).with_rule_id(rule_id);
+            let page = block_page(&c, &d);
+            assert!(
+                page.contains(expected_headline),
+                "rule {rule_id} should render its own headline"
+            );
+            headlines.insert(expected_headline);
+        }
+        assert_eq!(headlines.len(), kinds.len(), "copy must differ per kind");
+    }
+
+    #[test]
+    fn block_page_has_no_eyebrow_badge() {
+        // The outcome is the H1; a pill above it restating the H1 is decoration.
+        let c = ctx();
+        let d = Decision::new(Action::Block, 90.0).with_rule_id("SQLI016");
+        let page = block_page(&c, &d);
+        assert!(!page.contains("class=\"badge\""), "no eyebrow badge");
+        assert!(!page.contains("uppercase"), "no uppercase eyebrow");
+    }
+
+    #[test]
+    fn block_page_does_not_leak_raw_severity() {
+        let c = ctx();
+        let d = Decision::new(Action::Block, 90.0)
+            .with_rule_id("SQLI016")
+            .with_severity("critical");
+        let page = block_page(&c, &d);
+        assert!(
+            !page.contains("critical"),
+            "the raw internal severity vocabulary must not reach the client"
+        );
+    }
+
+    #[test]
+    fn flood_page_states_the_real_limit() {
+        let c = ctx();
+        let page = flood_page(&c, 30, 60);
+        assert!(page.contains("30 requests per second"));
+        assert!(page.contains("Retry after: 60 seconds"));
+        // It carries the shared sentinel motif too.
+        assert!(page.contains("class=\"sentinel\""));
+        assert!(page.contains(&c.request_id));
+    }
+
+    #[test]
+    fn challenge_page_shares_the_sentinel_motif() {
+        let c = ctx();
+        let page = challenge_page(&c);
+        assert!(page.contains("class=\"sentinel\""));
+        assert!(page.contains("A real browser clears this on its own"));
+    }
+
+    #[test]
+    fn stop_kind_classification() {
+        let k =
+            |id: &str| StopKind::from_decision(&Decision::new(Action::Block, 1.0).with_rule_id(id));
+        assert_eq!(k("BAN001"), StopKind::Banned);
+        assert_eq!(k("DDoS001"), StopKind::Flood);
+        assert_eq!(k("GRPC001"), StopKind::Flood);
+        assert_eq!(k("BOT004"), StopKind::Automation);
+        assert_eq!(k("JA3_001"), StopKind::Automation);
+        assert_eq!(k("SQLI016"), StopKind::Attack);
+        assert_eq!(k("RCE005"), StopKind::Attack);
+    }
+
+    #[test]
+    fn block_request_id_prefers_the_client_header() {
+        let mut r = fwaf_core::http::HttpRequest::new("GET", "/x");
+        r.raw_query = String::new();
+        r.header.add("X-Request-ID", "caller-abc-123");
+        let c = RequestContext::new(r);
+        assert_eq!(block_request_id(&c), "caller-abc-123");
+    }
+
+    #[test]
+    fn block_request_id_falls_back_to_generated() {
+        let c = ctx();
+        assert_eq!(block_request_id(&c), c.request_id);
+        assert!(!block_request_id(&c).is_empty());
     }
 
     #[test]

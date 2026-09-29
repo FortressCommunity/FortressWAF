@@ -193,11 +193,12 @@ pub fn base_page_css() -> String {
         .card{{max-width:var(--container-md);width:90%;margin:var(--space-lg);padding:var(--space-xl);\
         border:1px solid var(--border-default);border-radius:var(--radius-lg);\
         background:var(--surface-card)}}\n\
-        .badge{{display:inline-flex;align-items:center;gap:var(--space-sm);\
-        padding:var(--space-xs) var(--space-sm);border-radius:var(--radius-pill);\
-        font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;\
-        background:var(--error-bg);color:var(--error-text);border:1px solid var(--error-border)}}\n\
-        .badge svg{{width:14px;height:14px;flex:none;color:var(--error-icon)}}\n\
+        .lead{{font-size:20px;color:var(--text-primary);margin:var(--space-sm) 0}}\n\
+        .meta{{color:var(--text-tertiary);font-size:13px;margin:var(--space-xs) 0;\
+        font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-word}}\n\
+        .sentinel{{margin:var(--space-lg) 0 0;padding-top:var(--space-md);\
+        border-top:1px solid var(--border-default);color:var(--text-tertiary);font-size:13px}}\n\
+        .sentinel code{{font-weight:600;color:var(--text-secondary)}}\n\
         h1{{font-size:24px;line-height:1.25;margin:var(--space-md) 0 var(--space-sm)}}\n\
         h2{{font-size:20px;line-height:1.3;margin:0 0 var(--space-sm)}}\n\
         p{{color:var(--text-secondary);margin:var(--space-sm) 0}}\n\

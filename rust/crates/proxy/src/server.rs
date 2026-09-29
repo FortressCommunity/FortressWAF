@@ -30,9 +30,20 @@ use fwaf_services::compliance::AuditLog;
 use fwaf_services::traincorpus::Collector;
 
 use crate::handlers::{self, Reply, ServerInfo};
-use crate::pipeline::{self, Metrics, Outcome};
+use crate::pipeline::{self, stop_copy, Metrics, Outcome, StopKind};
 
 /// Shared state for both servers.
+/// A shared, pooled HTTP client for upstream forwarding.
+///
+/// One client owns one connection pool. Building a client per request (the
+/// previous behaviour) meant every forwarded request opened a new TCP
+/// connection and dropped it, exhausting ephemeral ports and file descriptors
+/// under load until requests blocked forever.
+pub type UpstreamClient = hyper_util::client::legacy::Client<
+    hyper_util::client::legacy::connect::HttpConnector,
+    Full<Bytes>,
+>;
+
 pub struct AppState {
     pub cfg_mgr: Arc<Manager>,
     pub engine: Arc<RwLock<Engine>>,
@@ -45,6 +56,11 @@ pub struct AppState {
     pub login_limiter: Arc<crate::loginlimit::LoginLimiter>,
     /// Per-site upstream base URLs, resolved from the config.
     pub upstreams: RwLock<HashMap<String, String>>,
+    /// Shared, pooled client for upstream requests (one pool for the process).
+    pub upstream_client: Arc<UpstreamClient>,
+    /// Hard cap on how long an upstream request may take, so a slow origin
+    /// cannot pin a task (and its connection) indefinitely.
+    pub upstream_timeout: std::time::Duration,
 }
 
 impl AppState {
@@ -59,6 +75,18 @@ impl AppState {
         } else {
             None
         };
+        // One pooled client for the whole process. `pool_max_idle_per_host`
+        // keeps keep-alive connections to the upstream instead of opening a
+        // new one per request.
+        let mut connector = hyper_util::client::legacy::connect::HttpConnector::new();
+        connector.set_nodelay(true);
+        connector.set_keepalive(Some(Duration::from_secs(30)));
+        let upstream_client: UpstreamClient =
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .pool_max_idle_per_host(64)
+                .pool_idle_timeout(Duration::from_secs(90))
+                .build(connector);
+
         Arc::new(AppState {
             cfg_mgr,
             engine: Arc::new(RwLock::new(engine)),
@@ -74,6 +102,8 @@ impl AppState {
                 Duration::from_secs(60),
             )),
             upstreams: RwLock::new(upstreams),
+            upstream_client: Arc::new(upstream_client),
+            upstream_timeout: Duration::from_secs(30),
         })
     }
 }
@@ -147,6 +177,7 @@ pub async fn proxy_handler(
             &app,
             &req,
             &body_bytes,
+            &remote_addr,
             "request_blocked",
             "banned_ip",
             "blocked",
@@ -249,6 +280,7 @@ pub async fn proxy_handler(
                 &app,
                 &req,
                 &body_bytes,
+                &remote_addr,
                 "request_blocked",
                 &decision.rule_id,
                 "blocked",
@@ -327,14 +359,44 @@ pub async fn proxy_handler(
             return Ok(resp);
         }
         Outcome::RateLimited => {
-            let mut resp = json_response(
-                429,
-                serde_json::json!({"error":"rate_limited","detail":"too many requests","retry_after":60}),
+            // The limit shown to the client is the one actually configured, not
+            // a literal. `per_ip_rate` is the per-address limit the DDoS
+            // inspector enforces; 0 means it fell back to the built-in default.
+            let cfg = app.cfg_mgr.get();
+            let limit = if cfg.ddos.per_ip_rate > 0 {
+                cfg.ddos.per_ip_rate
+            } else {
+                30
+            };
+            let retry_after = 60;
+
+            let mut resp = if pipeline::client_wants_json(&ctx) {
+                json_response(
+                    429,
+                    serde_json::json!({
+                        "error": "rate_limited",
+                        "detail": stop_copy(StopKind::Flood).1,
+                        "limit": limit,
+                        "retry_after": retry_after,
+                        "request_id": pipeline::block_request_id(&ctx),
+                    }),
+                )
+            } else {
+                let page = pipeline::flood_page(&ctx, limit, retry_after);
+                let mut r = Response::new(Full::new(Bytes::from(page)));
+                *r.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+                r.headers_mut().insert(
+                    hyper::header::CONTENT_TYPE,
+                    "text/html; charset=utf-8".parse().unwrap(),
+                );
+                r
+            };
+            resp.headers_mut().insert(
+                hyper::header::RETRY_AFTER,
+                retry_after.to_string().parse().unwrap(),
             );
             resp.headers_mut()
-                .insert(hyper::header::RETRY_AFTER, "60".parse().unwrap());
-            resp.headers_mut()
-                .insert("X-RateLimit-Limit", "100".parse().unwrap());
+                .insert("X-RateLimit-Limit", limit.to_string().parse().unwrap());
             resp.headers_mut()
                 .insert("X-RateLimit-Remaining", "0".parse().unwrap());
             resp.headers_mut()
@@ -410,21 +472,32 @@ fn json_response(status: i32, v: serde_json::Value) -> Response<Full<Bytes>> {
 }
 
 /// Build the blocked response (JSON or HTML page). Port of `writeBlockedResponse`.
+///
+/// The JSON body mirrors the page: the same headline/lead/detail from
+/// `stop_copy`, the request id, and the matched rule's human name. It does not
+/// expose the raw internal severity vocabulary (low/medium/high/critical),
+/// which means nothing to a client.
 fn blocked_response(
     ctx: &RequestContext,
     decision: &fwaf_core::action::Decision,
 ) -> Response<Full<Bytes>> {
+    let kind = StopKind::from_decision(decision);
+    let (headline, lead, detail) = stop_copy(kind);
     if pipeline::client_wants_json(ctx) {
         return json_response(
             403,
             serde_json::json!({
                 "blocked": true,
                 "action": "block",
-                "rule_id": decision.rule_id,
-                "rule_name": decision.rule_name,
-                "severity": decision.severity,
-                "evidence": decision.evidence,
-                "request_id": ctx.request_header("X-Request-ID"),
+                "headline": headline,
+                "lead": lead,
+                "detail": detail,
+                "matched": if decision.rule_name.is_empty() {
+                    decision.rule_id.clone()
+                } else {
+                    decision.rule_name.clone()
+                },
+                "request_id": pipeline::block_request_id(ctx),
             }),
         );
     }
@@ -459,6 +532,7 @@ fn record_request(
     app: &AppState,
     req: &Request<Full<Bytes>>,
     body: &[u8],
+    remote_addr: &str,
     action: &str,
     metadata: &str,
     result: &str,
@@ -472,14 +546,7 @@ fn record_request(
     let ctx = app
         .engine
         .read()
-        .context_from_request(&build_ctx_from_parts(
-            req,
-            body,
-            &req.extensions()
-                .get::<SocketAddr>()
-                .map(|s| s.to_string())
-                .unwrap_or_default(),
-        ));
+        .context_from_request(&build_ctx_from_parts(req, body, remote_addr));
     let ua = ctx.user_agent.clone();
     let (browser, device) = pipeline::parse_ua_flags(&ua);
     let headers = pipeline::audit_headers(&ctx);
@@ -487,7 +554,7 @@ fn record_request(
     if !evidence.is_empty() {
         meta = format!("{metadata} | {evidence}");
     }
-    let mut entry = fwaf_services::compliance::AuditEntry {
+    let entry = fwaf_services::compliance::AuditEntry {
         actor_type: "client".to_string(),
         actor_ip: client_ip.to_string(),
         action: action.to_string(),
@@ -502,7 +569,6 @@ fn record_request(
         headers: Some(headers.into_iter().collect()),
         ..Default::default()
     };
-    entry.status_code = 0;
     let _ = audit.append(entry);
 }
 
@@ -603,8 +669,9 @@ async fn forward_raw(
         Err(_) => return json_response(502, serde_json::json!({"error":"bad_gateway"})),
     };
 
-    // Perform the upstream request via hyper-legacy client.
-    match send_upstream(request).await {
+    // Perform the upstream request through the shared, pooled client, bounded
+    // by a timeout so a slow origin cannot pin the task forever.
+    match send_upstream(&app.upstream_client, request, app.upstream_timeout).await {
         Ok((status, headers, body)) => {
             let mut resp = Response::new(Full::new(Bytes::from(body)));
             *resp.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -628,30 +695,31 @@ async fn forward_raw(
     }
 }
 
-/// Send an upstream request. A thin wrapper so the transport is swappable.
+/// Send an upstream request through the shared pooled client, bounded by a
+/// timeout. The client keeps keep-alive connections, so bursts reuse sockets
+/// instead of opening one per request.
 async fn send_upstream(
+    client: &UpstreamClient,
     req: Request<Full<Bytes>>,
+    timeout: std::time::Duration,
 ) -> Result<(u16, Vec<(String, String)>, Vec<u8>), String> {
-    use hyper_util::client::legacy::connect::HttpConnector;
-    use hyper_util::client::legacy::Client;
-    use hyper_util::rt::TokioExecutor;
-
-    let client: Client<HttpConnector, Full<Bytes>> =
-        Client::builder(TokioExecutor::new()).build_http();
-    let resp = client.request(req).await.map_err(|e| e.to_string())?;
+    let fut = client.request(req);
+    let resp = match tokio::time::timeout(timeout, fut).await {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(e)) => return Err(e.to_string()),
+        Err(_) => return Err(format!("upstream timed out after {timeout:?}")),
+    };
     let status = resp.status().as_u16();
     let headers: Vec<(String, String)> = resp
         .headers()
         .iter()
         .filter_map(|(k, v)| v.to_str().ok().map(|s| (k.to_string(), s.to_string())))
         .collect();
-    let body = resp
-        .into_body()
-        .collect()
-        .await
-        .map_err(|e| e.to_string())?
-        .to_bytes()
-        .to_vec();
+    let body = match tokio::time::timeout(timeout, resp.into_body().collect()).await {
+        Ok(Ok(b)) => b.to_bytes().to_vec(),
+        Ok(Err(e)) => return Err(e.to_string()),
+        Err(_) => return Err(format!("upstream body timed out after {timeout:?}")),
+    };
     Ok((status, headers, body))
 }
 

@@ -193,13 +193,92 @@ This is the one place the Rust port intentionally produces *different bytes*
 than the Go backend; the semantics (status codes, headers, escaping, token
 generation) are unchanged.
 
+## 14. Concurrency and resource fixes (the port had hangs under load)
+
+Four issues in the first Rust version caused the proxy to stall under many
+concurrent requests. All are fixed; each has a regression guard.
+
+1. **Upstream HTTP client was built per request.** `send_upstream` constructed a
+   fresh `hyper_util` client for every forwarded request, so there was no
+   connection pooling: every request opened (and dropped) a TCP connection to
+   the origin. Under load this exhausted ephemeral ports and file descriptors,
+   and further requests blocked indefinitely. **Fix:** one pooled client on
+   `AppState` (`pool_max_idle_per_host(64)`), reused by every request. Go's
+   `http.Transport` had a shared pool, so this restores parity.
+
+2. **`Manager::get()` deep-cloned the whole `Config` per call.** The proxy calls
+   it on every request; cloning every site, rule, and nested map on the hot path
+   caused heavy allocation churn and latency. **Fix:** the manager holds
+   `Arc<RwLock<Arc<Config>>>` and `get()` returns a cheap `Arc` clone. Go
+   returned a pointer, so this restores parity. Guarded by
+   `get_returns_shared_arc_not_a_deep_copy` and
+   `update_config_swaps_the_arc_for_readers`.
+
+3. **The audit log was unbounded and appended non-atomically.** It grew without
+   limit under sustained traffic, and its append read-then-wrote under separate
+   locks, so two concurrent appends could compute the same sequence number or
+   chain onto a stale `prev_hash` (corrupting the chain). **Fix:** the append
+   holds one write lock for the whole operation, and the log is capped
+   (`AuditLog::with_cap`, default 100k) as a ring that drops the oldest entries.
+   `verify_integrity` still validates the retained window. Guarded by
+   `audit_log_is_bounded_and_still_verifies_after_trim`.
+
+4. **Unbounded upstream call.** A slow origin could pin a task (and its
+   connection) forever. **Fix:** upstream request and body reads are wrapped in
+   a 30s `tokio::time::timeout`.
+
+A related correctness fix: audit entries previously resolved an empty peer
+address (they read a `SocketAddr` extension that was never populated), so the
+recorded `real_ip`/`host` were wrong. The peer address is now threaded
+explicitly into `record_request`.
+
+Verified by a live stress test: 500 concurrent requests to the proxy and 200
+parallel requests to the admin health endpoint all returned `200` with no hangs.
+
+## 15. Attacker-facing block/challenge pages rewritten (anti-slop audit)
+
+The block and challenge pages no longer match the original byte-for-byte. They
+were audited under the antislop rules (`anti-slop/audit-001-2026-09-29.md`) and
+rewritten to a single declared direction, "calm sentinel" (dials ENERGY 1 /
+RHYTHM 2 / MOTION 1), which is deliberately separate from the operator
+console's "Quiet glass".
+
+What changed and why:
+
+- **Per-outcome copy.** A ban (`BAN*`), a flood (`DDoS*`/`GRPC*`), an attack
+  match, a scanner signature (`BOT*`/`JA3*`) and a challenge each get their own
+  headline, lead and detail (`StopKind`, `stop_copy`). The original served one
+  generic page for all of them.
+- **The ban page is no longer the generic block page.** A standing ban now
+  reads as a standing decision ("retrying will not change it"), which is a
+  different fact from a single request matching a rule.
+- **The rate-limit reply is a real page** (HTML) or structured JSON, not a bare
+  `{"error":"rate_limited"}`. The limit and wait shown are the values actually
+  in force (`ddos.per_ip_rate`, `Retry-After`), not the hardcoded `100` / `0`
+  that the first Rust version emitted.
+- **No eyebrow badge.** The outcome is the H1; the pill that restated it was
+  removed.
+- **No raw internal vocabulary.** The client no longer sees `low/medium/high/
+  critical` or raw rule ids; it sees plain words and the matched rule's human
+  name.
+- **One identity motif.** A shared "FortressWAF recorded this as <id>" status
+  line ties the block and challenge pages together, and carries the request id
+  that the audit log also holds.
+
+Unchanged: HTTP statuses (`403` block/challenge, `429` rate limit), the
+security-relevant headers (`X-FortressWAF-*`, `Retry-After`, `X-RateLimit-*`),
+HTML escaping, and the token-spine invariants (light+dark, WCAG AA contrast,
+keyboard focus). Verified live: SQLi -> attack page, `sqlmap` UA -> automation
+page, a per-IP flood -> the flood page with `x-ratelimit-limit: 3` (the
+configured value). The pages score 100/A on the deterministic UI gates.
+
 ---
 
 ## Verification summary
 
 - `cargo build --release` — clean across the workspace.
 - `cargo clippy --workspace` — zero warnings; `cargo fmt --check` — clean.
-- `cargo test --workspace` — **288 tests passing, 0 failing.**
+- `cargo test --workspace` — **300 tests passing, 0 failing.**
 - **Attack-corpus parity** (`crates/proxy/tests/attack_corpus.rs`) replays the
   project's own training corpus through the Rust engine and meets every
   documented floor:

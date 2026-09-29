@@ -78,10 +78,18 @@ impl Default for AuditEntry {
     }
 }
 
+/// Default cap on retained audit entries. The log is hash-chained and appended
+/// on the request path, so without a cap a busy proxy grows memory without
+/// bound and every append contends on a growing vector. Oldest entries are
+/// dropped past this cap; `verify_integrity` still validates the retained
+/// window (the chain is checked within what is held).
+pub const DEFAULT_AUDIT_CAP: usize = 100_000;
+
 pub struct AuditLog {
     entries: RwLock<Vec<AuditEntry>>,
     last_hash: RwLock<String>,
     immutable: bool,
+    cap: usize,
 }
 
 impl Default for AuditLog {
@@ -106,26 +114,46 @@ impl AuditLog {
             entries: RwLock::new(Vec::new()),
             last_hash: RwLock::new(String::new()),
             immutable: false,
+            cap: DEFAULT_AUDIT_CAP,
+        }
+    }
+
+    /// Build with a custom retention cap (`0` disables capping).
+    pub fn with_cap(cap: usize) -> Self {
+        AuditLog {
+            entries: RwLock::new(Vec::new()),
+            last_hash: RwLock::new(String::new()),
+            immutable: false,
+            cap,
         }
     }
 
     /// Port of `Append`.
+    ///
+    /// The whole operation holds the entries write lock so two concurrent
+    /// appends cannot compute the same sequence number or chain onto a stale
+    /// `prev_hash` (which would corrupt the chain). Past the retention cap the
+    /// oldest entry is dropped.
     pub fn append(&self, mut entry: AuditEntry) -> Result<(), String> {
         if self.immutable {
             return Err("audit log is immutable".to_string());
         }
         entry.timestamp = rfc3339_nano_now();
-        let idx = {
-            let entries = self.entries.read();
-            entries.len()
-        };
-        entry.id = format!("audit-{}", idx + 1);
-        entry.prev_hash = self.last_hash.read().clone();
+
+        let mut entries = self.entries.write();
+        let mut last_hash = self.last_hash.write();
+
+        entry.id = format!("audit-{}", entries.len() + 1);
+        entry.prev_hash = last_hash.clone();
         entry.hash = compute_entry_hash(&entry.prev_hash, &entry);
 
-        let hash = entry.hash.clone();
-        self.entries.write().push(entry);
-        *self.last_hash.write() = hash;
+        *last_hash = entry.hash.clone();
+        entries.push(entry);
+
+        if self.cap > 0 && entries.len() > self.cap {
+            let overflow = entries.len() - self.cap;
+            entries.drain(0..overflow);
+        }
         Ok(())
     }
 
@@ -161,15 +189,20 @@ impl AuditLog {
     }
 
     /// Port of `VerifyIntegrity`.
+    ///
+    /// Validates the hash chain across the retained window. When the log has
+    /// been trimmed to its cap, the first retained entry legitimately carries a
+    /// non-empty `prev_hash` (it chained onto a now-dropped entry), so the walk
+    /// is seeded from that first entry's own `prev_hash`. Tampering with any
+    /// retained entry is still detected, because each entry's content is
+    /// re-hashed against the link it recorded.
     pub fn verify_integrity(&self) -> Result<bool, String> {
         let entries = self.entries.read();
-        let mut prev_hash = String::new();
+        let mut prev_hash = match entries.first() {
+            Some(first) => first.prev_hash.clone(),
+            None => return Ok(true),
+        };
         for (i, entry) in entries.iter().enumerate() {
-            if i == 0 && !entry.prev_hash.is_empty() {
-                return Err(format!(
-                    "chain broken at entry {i}: first entry has prev_hash"
-                ));
-            }
             if entry.prev_hash != prev_hash {
                 return Err(format!(
                     "chain broken at entry {i}: expected {prev_hash}, got {}",
@@ -1414,6 +1447,30 @@ mod tests {
         })
         .unwrap();
         // Tamper with the stored entry's action directly.
+        log.entries.write()[0].action = "tampered".to_string();
+        assert!(log.verify_integrity().is_err());
+    }
+
+    #[test]
+    fn audit_log_is_bounded_and_still_verifies_after_trim() {
+        // An unbounded audit log grows without limit under load; the cap keeps
+        // memory flat, and the chain must still verify over the retained window.
+        let log = AuditLog::with_cap(10);
+        for i in 0..100 {
+            log.append(AuditEntry {
+                action: format!("a{i}"),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        assert_eq!(log.len(), 10, "log must be capped");
+        // The retained window is the newest 10 entries, in order.
+        let entries = log.query(AuditFilter::default());
+        assert_eq!(entries[0].action, "a90");
+        assert_eq!(entries[9].action, "a99");
+        // The chain verifies across the trimmed window.
+        assert!(log.verify_integrity().unwrap());
+        // Tampering with a retained entry is still caught.
         log.entries.write()[0].action = "tampered".to_string();
         assert!(log.verify_integrity().is_err());
     }
