@@ -128,7 +128,6 @@ func realisticReferers() []string {
 // profiles, paths, cookies, and referers through the full engine and reports
 // every block. The test fails if any realistic request is blocked.
 func TestFuzz_NoFalsePositivesOnBrowserTraffic(t *testing.T) {
-	e := fullEngine()
 	profiles := browserProfiles()
 	paths := trafficPaths()
 	cookies := realisticCookies()
@@ -145,15 +144,33 @@ func TestFuzz_NoFalsePositivesOnBrowserTraffic(t *testing.T) {
 	total := 0
 	ipSeq := 0
 
+	// The rate limiter is deliberately excluded: this suite fires ~19k requests
+	// as fast as it can, which is a flood by definition, and the DDoS/rate
+	// inspectors exist to catch exactly that. Its behaviour is covered by its
+	// own tests. Here we measure whether the *detection rules* block ordinary
+	// traffic.
+	e := engine.New(engine.EngineConfig{
+		DevMode:    true,
+		SQLI:       engine.NewSQLInjectionEngine(true),
+		XSS:        engine.NewXSSEngine(true),
+		RCE:        engine.NewRCEInjection(true),
+		Protocol:   engine.NewProtocolAnomaly(true),
+		Bot:        engine.NewBotDetector(true),
+		APIProtect: engine.NewAPIProtection(true),
+		Upload:     engine.NewFileUploadSecurity(true),
+		JA3:        engine.NewJA3Inspector(true),
+		Desync:     engine.NewDesyncDetector(true, 1048576, true, true),
+		Parser:     engine.NewParserHardener(true),
+	})
+	_ = fullEngine
+
 	for _, prof := range profiles {
 		for _, p := range paths {
 			for _, ck := range cookies {
 				for _, ref := range referers {
 					total++
-					// A distinct source IP per request: this suite measures rule
-					// false positives, not the per-IP rate limiter (which would
-					// fire on any harness that sends thousands of requests from
-					// one address, and which a real visitor never hits).
+					// A distinct source IP per request: rule false positives,
+					// not per-IP accounting.
 					ipSeq++
 					srcIP := fmt.Sprintf("203.0.113.%d", (ipSeq%250)+1)
 					h := merge(prof.headers, map[string]string{"Cookie": ck, "Referer": ref})
@@ -162,7 +179,7 @@ func TestFuzz_NoFalsePositivesOnBrowserTraffic(t *testing.T) {
 						t.Fatalf("inspect %s: %v", p, err)
 					}
 					if dec != nil && (dec.Action == engine.ActionBlock || dec.Action == engine.ActionChallenge) {
-						byRule[dec.RuleID]++
+						byRule[dec.RuleID+" "+dec.InspectorName]++
 						if len(findings) < 80 {
 							findings = append(findings, finding{dec.RuleID, string(dec.Action), p, prof.name + " | ref=" + ref + " | ck=" + ck})
 						}

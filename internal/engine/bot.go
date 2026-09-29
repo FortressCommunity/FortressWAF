@@ -7,7 +7,16 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
+
+// BotOptions tunes the repeat-offender auto-ban. Zero fields use the defaults;
+// AutoBanAfter < 0 disables the counter and its ban entirely.
+type BotOptions struct {
+	AutoBanAfter    int           // bot-like requests per IP within the window
+	AutoBanWindow   time.Duration // sliding window for the count
+	AutoBanDuration time.Duration // ban length once the count is reached
+}
 
 type BotDetector struct {
 	mu               sync.RWMutex
@@ -16,11 +25,36 @@ type BotDetector struct {
 	badBots          []*regexp.Regexp
 	headlessPatterns []*regexp.Regexp
 	honeypotFields   []string
+
+	autoBanAfter    int
+	autoBanWindow   time.Duration
+	autoBanDuration time.Duration
+	botHits         map[string]*SlidingWindowCounter
+	lastCleanup     time.Time
 }
 
 func NewBotDetector(devMode bool) *BotDetector {
+	return NewBotDetectorWithOptions(devMode, BotOptions{})
+}
+
+func NewBotDetectorWithOptions(devMode bool, opts BotOptions) *BotDetector {
+	if opts.AutoBanAfter == 0 {
+		opts.AutoBanAfter = 5
+	}
+	if opts.AutoBanWindow <= 0 {
+		opts.AutoBanWindow = time.Minute
+	}
+	if opts.AutoBanDuration == 0 {
+		opts.AutoBanDuration = 10 * time.Minute
+	}
+
 	d := &BotDetector{
-		devMode: devMode,
+		devMode:         devMode,
+		autoBanAfter:    opts.AutoBanAfter,
+		autoBanWindow:   opts.AutoBanWindow,
+		autoBanDuration: opts.AutoBanDuration,
+		botHits:         make(map[string]*SlidingWindowCounter),
+		lastCleanup:     time.Now(),
 		goodBots: map[string]*regexp.Regexp{
 			"googlebot":    regexp.MustCompile(`(?i)googlebot|google(?:-mobile|bot|adsense|structured-data|cloud-platform)`),
 			"bingbot":      regexp.MustCompile(`(?i)bingbot|msnbot|bingpreview`),
@@ -106,14 +140,11 @@ func (d *BotDetector) Name() string { return "bot_detector" }
 func (d *BotDetector) Inspect(ctx *RequestContext) (*Decision, error) {
 	ua := ctx.UserAgent
 	if ua == "" {
-		return &Decision{
-			Action:   ActionMonitor,
-			RuleID:   "BOT001",
-			RuleName: "Missing User-Agent",
-			Severity: "medium",
-			Score:    30,
-			Evidence: "request has no user-agent header",
-		}, nil
+		// A request with no User-Agent is not a browser. Challenge it (rather
+		// than silently monitor) and count it: a client that keeps doing this
+		// is a scraper or a probe, and repeated offences auto-ban the address.
+		return d.botlike(ctx, ActionChallenge, "BOT001", "Missing User-Agent", "medium", 30,
+			"request has no user-agent header"), nil
 	}
 
 	for name, pattern := range d.goodBots {
@@ -139,32 +170,20 @@ func (d *BotDetector) Inspect(ctx *RequestContext) (*Decision, error) {
 
 	for _, pattern := range d.headlessPatterns {
 		if pattern.MatchString(ua) {
-			return &Decision{
-				Action:   ActionBlock,
-				RuleID:   "BOT003",
-				RuleName: "Headless Browser Detected",
-				Severity: "high",
-				Score:    70,
-				Evidence: fmt.Sprintf("headless browser pattern detected: %s", ua),
-			}, nil
+			return d.botlike(ctx, ActionBlock, "BOT003", "Headless Browser Detected", "high", 70,
+				fmt.Sprintf("headless browser pattern detected: %s", ua)), nil
 		}
 	}
 
 	for _, pattern := range d.badBots {
 		if pattern.MatchString(ua) {
-			return &Decision{
-				Action:   ActionBlock,
-				RuleID:   "BOT004",
-				RuleName: "Bad Bot Detected",
-				Severity: "high",
-				Score:    80,
-				Evidence: fmt.Sprintf("bad bot signature matched: %s", pattern.String()),
-			}, nil
+			return d.botlike(ctx, ActionBlock, "BOT004", "Bad Bot Detected", "high", 80,
+				fmt.Sprintf("bad bot signature matched: %s", pattern.String())), nil
 		}
 	}
 
 	if dec := d.detectHoneypot(ctx); dec != nil {
-		return dec, nil
+		return d.botlikeDecision(ctx, dec), nil
 	}
 
 	if dec := d.detectBrowserFeatures(ctx); dec != nil {
@@ -201,6 +220,60 @@ func (d *BotDetector) verifyGoodBot(ctx *RequestContext) bool {
 	}
 
 	return false
+}
+
+// botlike builds a bot decision and records one hit against the source address.
+// Once an address reaches the repeat-offender threshold within the window, the
+// decision asks the caller to ban it. Auto-ban is off when autoBanAfter < 0.
+func (d *BotDetector) botlike(ctx *RequestContext, action Action, ruleID, name, severity string, score float64, evidence string) *Decision {
+	return d.botlikeDecision(ctx, &Decision{
+		Action:   action,
+		RuleID:   ruleID,
+		RuleName: name,
+		Severity: severity,
+		Score:    score,
+		Evidence: evidence,
+	})
+}
+
+// botlikeDecision attaches the repeat-offender count and ban request to an
+// already-built bot decision.
+func (d *BotDetector) botlikeDecision(ctx *RequestContext, dec *Decision) *Decision {
+	if dec == nil || d.autoBanAfter < 0 || ctx.RealIP == "" {
+		return dec
+	}
+	count := d.recordBotHit(ctx.RealIP)
+	if count >= d.autoBanAfter && d.autoBanDuration > 0 {
+		dec.BanRequest = true
+		dec.BanDuration = d.autoBanDuration
+		dec.Evidence = fmt.Sprintf("%s (bot-like request %d/%d in window)", dec.Evidence, count, d.autoBanAfter)
+	}
+	return dec
+}
+
+// recordBotHit increments the sliding count for an address and returns the new
+// count. Entries are pruned lazily so the map cannot grow without bound.
+func (d *BotDetector) recordBotHit(ip string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	now := time.Now()
+	if now.Sub(d.lastCleanup) > 5*time.Minute {
+		for k, c := range d.botHits {
+			if c.lastSeen().Before(now.Add(-2 * d.autoBanWindow)) {
+				delete(d.botHits, k)
+			}
+		}
+		d.lastCleanup = now
+	}
+
+	c, ok := d.botHits[ip]
+	if !ok {
+		c = &SlidingWindowCounter{window: d.autoBanWindow, maxCount: d.autoBanAfter + 1}
+		d.botHits[ip] = c
+	}
+	c.record(now)
+	return c.count()
 }
 
 func (d *BotDetector) detectHoneypot(ctx *RequestContext) *Decision {

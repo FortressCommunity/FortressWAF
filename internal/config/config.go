@@ -280,6 +280,16 @@ type RCEConfig struct {
 
 type DDoSConfig struct {
 	Enabled bool `yaml:"enabled"`
+	// Thresholds, all per second unless noted. Zero means "use the engine
+	// default". A request that exceeds the per-IP rate is answered 429 and the
+	// source is auto-banned for the duration below.
+	PerIPRate       int `yaml:"per_ip_rate"`
+	PerEndpointRate int `yaml:"per_endpoint_rate"`
+	GlobalRate      int `yaml:"global_rate"`
+	// BanSeconds is how long an address that trips the rate limit is banned.
+	// Zero uses the default (600s). A negative value disables auto-ban (only
+	// the 429 is returned).
+	BanSeconds int `yaml:"ban_seconds"`
 }
 
 type ProtocolConfig struct {
@@ -288,6 +298,16 @@ type ProtocolConfig struct {
 
 type BotConfig struct {
 	Enabled bool `yaml:"enabled"`
+	// AutoBanAfter is the number of bot-like requests from one address within
+	// the window before that address is auto-banned. Zero uses the default (5).
+	// A negative value disables it.
+	AutoBanAfter int `yaml:"auto_ban_after"`
+	// AutoBanWindowSec is the sliding window for the count above. Zero uses the
+	// default (60s).
+	AutoBanWindowSec int `yaml:"auto_ban_window_sec"`
+	// AutoBanSeconds is the ban duration for a repeat bot offender. Zero uses
+	// the default (600s).
+	AutoBanSeconds int `yaml:"auto_ban_seconds"`
 }
 
 type APIProtectConfig struct {

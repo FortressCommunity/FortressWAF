@@ -51,8 +51,8 @@ Every module below is a built-in inspector. Those marked *stable* are enabled by
 | Path traversal & parser hardening (encoding, null bytes) | PARSER_001+ | **stable** |
 | HTTP request smuggling (CL.TE / TE.CL) | DSYNC_001+ | **stable** |
 | Protocol anomalies (verb tampering, header smuggling, malformed requests) | PROT001+ | **stable** |
-| Bot detection (attack-tool signatures; ordinary clients like `curl`, `axios`, and real browsers are not flagged) | BOT+ | **stable** |
-| DDoS protection (slow loris, slow POST) | DDoS000+ | **stable** |
+| Bot detection (attack-tool signatures; ordinary clients like `curl`, `axios`, and real browsers are not flagged) | BOT+ | **stable** — definite bots are blocked, a missing User-Agent is challenged, and a repeat offender is auto-banned |
+| DDoS protection (per-IP / per-endpoint / global flood, slow loris, slow POST) | DDoS000+ | **stable** — a per-IP flood is answered `429` and the source is auto-banned for `ddos.ban_seconds` |
 | Credential protection (brute force, stuffing, spray, lockout) | CRED+ | **stable** |
 | File upload validation (MIME, extension, magic bytes) | UPL001+ | **stable** |
 | API protection (mass assignment, schema hints) | API+ | **stable** |
@@ -89,7 +89,7 @@ documented floor. Measured detection rates: XXE 100%, XSS 99%, deserialization
 | ML / compliance metrics in Grafana | **not available** — the exporter emits no such series, so the two dashboards that queried them were removed rather than left rendering empty panels |
 | Protected-domain management with DNS verification | **stable** — add a domain in the console; it is only protected after the WAF itself resolves its A/AAAA record and confirms it points at this server |
 | Full request log (IP, browser, headers) | **stable** — every inspected request is recorded with method, path, source IP, parsed browser/device, and full headers (credentials redacted) |
-| IP ban / unban | **stable** — banned addresses are refused before inspection, on every site; bans can expire |
+| IP ban / unban | **stable** — banned addresses are refused before inspection, on every site; bans can expire. Floods and repeat bot offenders are auto-banned (time-limited), never the operator's trusted proxies or loopback |
 | Live training corpus + validated retrain | **stable** — high-confidence blocks are labelled by rule and appended to the corpus; the sidecar retrains and keeps the new model only if it scores at least as well |
 
 ### Management API

@@ -27,6 +27,28 @@ func request(remoteAddr, xff, xri string) *http.Request {
 	return r
 }
 
+// Behind Cloudflare the trusted peer is Caddy, but the left-most XFF entry is
+// Cloudflare's edge. CF-Connecting-IP carries the real visitor and must win,
+// so rate limits and auto-bans act on the visitor, not on Cloudflare.
+func TestClientIP_TrustedProxy_PrefersCloudflareConnectingIP(t *testing.T) {
+	e := engineWithProxies(t, "172.18.0.0/16")
+	r := request("172.18.0.5:5555", "162.158.162.149", "")
+	r.Header.Set("CF-Connecting-IP", "198.51.100.77")
+	if got := e.ClientIP(r); got != "198.51.100.77" {
+		t.Fatalf("ClientIP = %q, want the CF-Connecting-IP visitor 198.51.100.77", got)
+	}
+}
+
+// An untrusted peer cannot spoof CF-Connecting-IP.
+func TestClientIP_UntrustedPeer_IgnoresCloudflareHeader(t *testing.T) {
+	e := engineWithProxies(t, "172.18.0.0/16")
+	r := request("203.0.113.9:5555", "", "")
+	r.Header.Set("CF-Connecting-IP", "198.51.100.77")
+	if got := e.ClientIP(r); got != "203.0.113.9" {
+		t.Fatalf("ClientIP = %q, want the peer 203.0.113.9", got)
+	}
+}
+
 // Edge deployment: a client-supplied forwarded header must never be trusted.
 // This is what makes per-IP rate limits and brute-force lockouts unspoofable.
 func TestClientIP_Edge_IgnoresForwardedHeaders(t *testing.T) {
