@@ -494,6 +494,8 @@ Stated plainly, because hiding them would be worse than having them:
 | [Deployment](docs/deployment.md) | Docker, K8s, cloud |
 | [Compliance](docs/compliance.md) | PCI-DSS, SOC2, GDPR references |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues |
+| [AGENTS.md](AGENTS.md) | Entry point for AI coding agents working on this repo |
+| [skills/](skills/README.md) | Project skills for agents (backend workflow) |
 | [rust/DEVIATIONS.md](rust/DEVIATIONS.md) | Every intentional difference from the original implementation |
 
 See limitation 8 above: these describe the intended design and overstate what is
