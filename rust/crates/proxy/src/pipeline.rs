@@ -161,6 +161,21 @@ pub fn client_wants_json(ctx: &RequestContext) -> bool {
     false
 }
 
+/// The request id to show on a block page or in a block JSON body.
+///
+/// Prefer a client-supplied `X-Request-ID` for correlation when present;
+/// otherwise fall back to the WAF-generated id (`ctx.request_id`), which is the
+/// same id written to the audit log. Using only the header left this field
+/// blank for every ordinary client, which is what a browser is.
+pub fn block_request_id(ctx: &RequestContext) -> String {
+    let header = ctx.request_header("X-Request-ID");
+    if !header.is_empty() {
+        header.to_string()
+    } else {
+        ctx.request_id.clone()
+    }
+}
+
 /// The FortressWAF block page.
 ///
 /// Rendered entirely from the token spine ([`crate::tokens`]): semantic CSS
@@ -206,7 +221,7 @@ pub fn block_page(ctx: &RequestContext, decision: &Decision) -> String {
         rule_name = html_escape(&decision.rule_name),
         severity = html_escape(&decision.severity),
         path = html_escape(&ctx.path),
-        request_id = html_escape(ctx.request_header("X-Request-ID")),
+        request_id = html_escape(&block_request_id(ctx)),
     )
 }
 
@@ -516,6 +531,44 @@ mod tests {
         assert!(page.contains("&lt;script&gt;alert&lt;/script&gt;"));
         assert!(!page.contains("<script>alert</script>"));
         assert!(page.contains("XSS001"));
+    }
+
+    #[test]
+    fn block_page_shows_a_request_id_without_a_client_header() {
+        // Regression: the page used to render only the client's X-Request-ID
+        // header, which is absent for ordinary browsers, so the field was
+        // blank. It must fall back to the WAF-generated id.
+        let c = ctx();
+        assert_eq!(c.request_header("X-Request-ID"), "");
+        let d = Decision::new(Action::Block, 90.0)
+            .with_rule_id("SQLI016")
+            .with_severity("high");
+        let page = block_page(&c, &d);
+        // The generated id appears in the page, and the field is not empty.
+        assert!(
+            page.contains(&c.request_id) && !c.request_id.is_empty(),
+            "block page must contain the generated request id"
+        );
+        assert!(
+            !page.contains("<dd></dd>"),
+            "no metadata field may render empty"
+        );
+    }
+
+    #[test]
+    fn block_request_id_prefers_the_client_header() {
+        let mut r = fwaf_core::http::HttpRequest::new("GET", "/x");
+        r.raw_query = String::new();
+        r.header.add("X-Request-ID", "caller-abc-123");
+        let c = RequestContext::new(r);
+        assert_eq!(block_request_id(&c), "caller-abc-123");
+    }
+
+    #[test]
+    fn block_request_id_falls_back_to_generated() {
+        let c = ctx();
+        assert_eq!(block_request_id(&c), c.request_id);
+        assert!(!block_request_id(&c).is_empty());
     }
 
     #[test]

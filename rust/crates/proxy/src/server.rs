@@ -456,7 +456,7 @@ fn blocked_response(
                 "rule_name": decision.rule_name,
                 "severity": decision.severity,
                 "evidence": decision.evidence,
-                "request_id": ctx.request_header("X-Request-ID"),
+                "request_id": pipeline::block_request_id(ctx),
             }),
         );
     }
