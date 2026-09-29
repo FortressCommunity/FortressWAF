@@ -30,7 +30,7 @@ use fwaf_services::compliance::AuditLog;
 use fwaf_services::traincorpus::Collector;
 
 use crate::handlers::{self, Reply, ServerInfo};
-use crate::pipeline::{self, Metrics, Outcome};
+use crate::pipeline::{self, stop_copy, Metrics, Outcome, StopKind};
 
 /// Shared state for both servers.
 /// A shared, pooled HTTP client for upstream forwarding.
@@ -359,14 +359,44 @@ pub async fn proxy_handler(
             return Ok(resp);
         }
         Outcome::RateLimited => {
-            let mut resp = json_response(
-                429,
-                serde_json::json!({"error":"rate_limited","detail":"too many requests","retry_after":60}),
+            // The limit shown to the client is the one actually configured, not
+            // a literal. `per_ip_rate` is the per-address limit the DDoS
+            // inspector enforces; 0 means it fell back to the built-in default.
+            let cfg = app.cfg_mgr.get();
+            let limit = if cfg.ddos.per_ip_rate > 0 {
+                cfg.ddos.per_ip_rate
+            } else {
+                30
+            };
+            let retry_after = 60;
+
+            let mut resp = if pipeline::client_wants_json(&ctx) {
+                json_response(
+                    429,
+                    serde_json::json!({
+                        "error": "rate_limited",
+                        "detail": stop_copy(StopKind::Flood).1,
+                        "limit": limit,
+                        "retry_after": retry_after,
+                        "request_id": pipeline::block_request_id(&ctx),
+                    }),
+                )
+            } else {
+                let page = pipeline::flood_page(&ctx, limit, retry_after);
+                let mut r = Response::new(Full::new(Bytes::from(page)));
+                *r.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+                r.headers_mut().insert(
+                    hyper::header::CONTENT_TYPE,
+                    "text/html; charset=utf-8".parse().unwrap(),
+                );
+                r
+            };
+            resp.headers_mut().insert(
+                hyper::header::RETRY_AFTER,
+                retry_after.to_string().parse().unwrap(),
             );
             resp.headers_mut()
-                .insert(hyper::header::RETRY_AFTER, "60".parse().unwrap());
-            resp.headers_mut()
-                .insert("X-RateLimit-Limit", "100".parse().unwrap());
+                .insert("X-RateLimit-Limit", limit.to_string().parse().unwrap());
             resp.headers_mut()
                 .insert("X-RateLimit-Remaining", "0".parse().unwrap());
             resp.headers_mut()
@@ -442,20 +472,31 @@ fn json_response(status: i32, v: serde_json::Value) -> Response<Full<Bytes>> {
 }
 
 /// Build the blocked response (JSON or HTML page). Port of `writeBlockedResponse`.
+///
+/// The JSON body mirrors the page: the same headline/lead/detail from
+/// `stop_copy`, the request id, and the matched rule's human name. It does not
+/// expose the raw internal severity vocabulary (low/medium/high/critical),
+/// which means nothing to a client.
 fn blocked_response(
     ctx: &RequestContext,
     decision: &fwaf_core::action::Decision,
 ) -> Response<Full<Bytes>> {
+    let kind = StopKind::from_decision(decision);
+    let (headline, lead, detail) = stop_copy(kind);
     if pipeline::client_wants_json(ctx) {
         return json_response(
             403,
             serde_json::json!({
                 "blocked": true,
                 "action": "block",
-                "rule_id": decision.rule_id,
-                "rule_name": decision.rule_name,
-                "severity": decision.severity,
-                "evidence": decision.evidence,
+                "headline": headline,
+                "lead": lead,
+                "detail": detail,
+                "matched": if decision.rule_name.is_empty() {
+                    decision.rule_id.clone()
+                } else {
+                    decision.rule_name.clone()
+                },
                 "request_id": pipeline::block_request_id(ctx),
             }),
         );

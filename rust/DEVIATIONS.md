@@ -235,13 +235,50 @@ explicitly into `record_request`.
 Verified by a live stress test: 500 concurrent requests to the proxy and 200
 parallel requests to the admin health endpoint all returned `200` with no hangs.
 
+## 15. Attacker-facing block/challenge pages rewritten (anti-slop audit)
+
+The block and challenge pages no longer match the original byte-for-byte. They
+were audited under the antislop rules (`anti-slop/audit-001-2026-09-29.md`) and
+rewritten to a single declared direction, "calm sentinel" (dials ENERGY 1 /
+RHYTHM 2 / MOTION 1), which is deliberately separate from the operator
+console's "Quiet glass".
+
+What changed and why:
+
+- **Per-outcome copy.** A ban (`BAN*`), a flood (`DDoS*`/`GRPC*`), an attack
+  match, a scanner signature (`BOT*`/`JA3*`) and a challenge each get their own
+  headline, lead and detail (`StopKind`, `stop_copy`). The original served one
+  generic page for all of them.
+- **The ban page is no longer the generic block page.** A standing ban now
+  reads as a standing decision ("retrying will not change it"), which is a
+  different fact from a single request matching a rule.
+- **The rate-limit reply is a real page** (HTML) or structured JSON, not a bare
+  `{"error":"rate_limited"}`. The limit and wait shown are the values actually
+  in force (`ddos.per_ip_rate`, `Retry-After`), not the hardcoded `100` / `0`
+  that the first Rust version emitted.
+- **No eyebrow badge.** The outcome is the H1; the pill that restated it was
+  removed.
+- **No raw internal vocabulary.** The client no longer sees `low/medium/high/
+  critical` or raw rule ids; it sees plain words and the matched rule's human
+  name.
+- **One identity motif.** A shared "FortressWAF recorded this as <id>" status
+  line ties the block and challenge pages together, and carries the request id
+  that the audit log also holds.
+
+Unchanged: HTTP statuses (`403` block/challenge, `429` rate limit), the
+security-relevant headers (`X-FortressWAF-*`, `Retry-After`, `X-RateLimit-*`),
+HTML escaping, and the token-spine invariants (light+dark, WCAG AA contrast,
+keyboard focus). Verified live: SQLi -> attack page, `sqlmap` UA -> automation
+page, a per-IP flood -> the flood page with `x-ratelimit-limit: 3` (the
+configured value). The pages score 100/A on the deterministic UI gates.
+
 ---
 
 ## Verification summary
 
 - `cargo build --release` — clean across the workspace.
 - `cargo clippy --workspace` — zero warnings; `cargo fmt --check` — clean.
-- `cargo test --workspace` — **291 tests passing, 0 failing.**
+- `cargo test --workspace` — **300 tests passing, 0 failing.**
 - **Attack-corpus parity** (`crates/proxy/tests/attack_corpus.rs`) replays the
   project's own training corpus through the Rust engine and meets every
   documented floor:
