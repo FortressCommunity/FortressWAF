@@ -1,27 +1,31 @@
 /** @type {import('next').NextConfig} */
 
-// The admin API origin the browser calls. CSP connect-src must name it exactly;
-// everything else is denied. NEXT_PUBLIC_API_URL is inlined at build time, so
-// this stays in sync with lib/api.ts.
-const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8443/api/v1'
-let apiOrigin = apiUrl
+// The admin API base the browser calls. With the same-origin default ("/api/v1")
+// the CSP needs only 'self'; a CSP connect-src entry must be a scheme/host
+// source (or 'self'), never a path, so a relative base is not added. When an
+// absolute URL is configured, its origin is allowed explicitly.
+const apiUrl = process.env.NEXT_PUBLIC_API_URL || '/api/v1'
+let apiOrigin = ''
 try {
-  apiOrigin = new URL(apiUrl).origin
+  const u = new URL(apiUrl)
+  // Only absolute URLs produce an origin; a relative path falls through with
+  // apiOrigin left empty, so 'self' covers it.
+  if (u.origin && u.origin !== 'null') apiOrigin = u.origin
 } catch {
-  // Leave as-is; a malformed URL will simply not match connect-src.
+  // Relative base: same-origin, covered by 'self'.
 }
 
 // Next.js injects inline bootstrap scripts, and the theme is applied by an
 // inline script in layout.tsx, so 'unsafe-inline' is required for scripts. The
 // rest is locked down: no remote script/frame/object sources, and network
-// access limited to the admin API.
+// access limited to 'self' plus the configured API origin (if any).
 const csp = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self' data:",
-  `connect-src 'self' ${apiOrigin}`,
+  `connect-src 'self'${apiOrigin ? ' ' + apiOrigin : ''}`,
   "object-src 'none'",
   "base-uri 'self'",
   "frame-ancestors 'none'",
