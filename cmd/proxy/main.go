@@ -582,6 +582,13 @@ func (h *wafHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An inspector can ask for the source to be banned (a DDoS flood, or a
+	// repeat bot offender). Enforce it here, in the proxy, so the engine keeps
+	// no ban state. The ban is time-limited and reversible, and it is logged.
+	if decision != nil && decision.BanRequest {
+		h.applyAutoBan(r, clientIP, decision)
+	}
+
 	switch decision.Action {
 	case engine.ActionAllow:
 		allowedRequests.Add(1)
@@ -670,6 +677,42 @@ func (h *wafHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		allowedRequests.Add(1)
 		h.recordRequest(r, "request_allowed", "", "allowed", "", clientIP)
 		h.forwardRequest(w, r, site)
+	}
+}
+
+// applyAutoBan bans an address that an inspector flagged, for the requested
+// duration (or the default). It is skipped when the blocklist is unavailable,
+// the address is loopback or a trusted proxy (banning a hop would lock out
+// everyone behind it), or the duration is negative (auto-ban disabled).
+// It is idempotent — re-banning refreshes the expiry — and it raises an alert.
+func (h *wafHandler) applyAutoBan(r *http.Request, ip string, decision *engine.Decision) {
+	if h.bans == nil || ip == "" || net.ParseIP(ip) == nil {
+		return
+	}
+	if net.ParseIP(ip).IsLoopback() || h.engine.IsTrustedProxy(ip) {
+		return
+	}
+	dur := decision.BanDuration
+	if dur <= 0 {
+		dur = 10 * time.Minute
+	}
+	entry, err := h.bans.Ban(ip, "auto: "+decision.RuleID+" "+decision.RuleName, "waf", dur)
+	if err != nil {
+		slog.Warn("auto-ban failed", "ip", ip, "rule", decision.RuleID, "error", err)
+		return
+	}
+	slog.Warn("auto-banned address", "ip", ip, "rule", decision.RuleID, "for", dur.String())
+	serverAlerts.add("high", "Auto-ban: "+decision.RuleName,
+		fmt.Sprintf("banned %s for %s (%s)", ip, dur, decision.RuleID), decision.RuleID)
+	if h.auditLog != nil {
+		_ = h.auditLog.Append(compliance.AuditEntry{
+			ActorType: "waf",
+			ActorIP:   ip,
+			Action:    "ip_auto_banned",
+			Resource:  r.Host + r.URL.Path,
+			Result:    "banned",
+			Metadata:  fmt.Sprintf("%s: %s (expires %s)", decision.RuleID, decision.RuleName, entry.ExpiresAt.Format(time.RFC3339)),
+		})
 	}
 }
 
@@ -1639,13 +1682,37 @@ func buildEngineConfig(cfg *config.Config, dev bool) engine.EngineConfig {
 		eCfg.RCE = engine.NewRCEInjection(dev)
 	}
 	if cfg.DDoS.Enabled {
-		eCfg.DDoS = engine.NewDDoSProtection(dev)
+		var ban time.Duration
+		if cfg.DDoS.BanSeconds != 0 {
+			ban = time.Duration(cfg.DDoS.BanSeconds) * time.Second
+		}
+		eCfg.DDoS = engine.NewDDoSProtectionWithOptions(dev, engine.DDoSOptions{
+			GlobalRate:      cfg.DDoS.GlobalRate,
+			PerIPRate:       cfg.DDoS.PerIPRate,
+			PerEndpointRate: cfg.DDoS.PerEndpointRate,
+			PerIPBan:        ban,
+		})
 	}
 	if cfg.Protocol.Enabled {
 		eCfg.Protocol = engine.NewProtocolAnomaly(dev)
 	}
 	if cfg.Bot.Enabled {
-		eCfg.Bot = engine.NewBotDetector(dev)
+		var window, dur time.Duration
+		if cfg.Bot.AutoBanWindowSec > 0 {
+			window = time.Duration(cfg.Bot.AutoBanWindowSec) * time.Second
+		}
+		if cfg.Bot.AutoBanSeconds > 0 {
+			dur = time.Duration(cfg.Bot.AutoBanSeconds) * time.Second
+		}
+		var afterN int
+		if cfg.Bot.AutoBanAfter != 0 {
+			afterN = cfg.Bot.AutoBanAfter
+		}
+		eCfg.Bot = engine.NewBotDetectorWithOptions(dev, engine.BotOptions{
+			AutoBanAfter:    afterN,
+			AutoBanWindow:   window,
+			AutoBanDuration: dur,
+		})
 	}
 	if cfg.APIProtect.Enabled {
 		eCfg.APIProtect = engine.NewAPIProtection(dev)

@@ -84,6 +84,17 @@ func (e *Engine) ClientIP(r *http.Request) string {
 		return peer
 	}
 
+	// Behind Cloudflare the left-most X-Forwarded-For entry is Cloudflare's own
+	// edge, not the visitor: Cloudflare sets CF-Connecting-IP to the real client
+	// and appends to XFF. When the peer is a trusted proxy, that header is the
+	// accurate source address, so prefer it. It is only honoured from a trusted
+	// peer, so a client cannot spoof it.
+	if cf := r.Header.Get("CF-Connecting-IP"); cf != "" {
+		if ip := net.ParseIP(strings.TrimSpace(cf)); ip != nil {
+			return ip.String()
+		}
+	}
+
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		// Left-most address is the original client when proxies append in
 		// order; each hop is attacker-controlled beyond the trusted one, so

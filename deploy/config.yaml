@@ -90,9 +90,25 @@ sites:
 sqli:  { enabled: true }
 xss:   { enabled: true }
 rce:   { enabled: true }
-ddos:  { enabled: true }
+# DDoS: per-IP flood (requests/second) is answered 429 AND the source address is
+# auto-banned for ban_seconds. A negative ban_seconds disables the auto-ban
+# (429 only). Thresholds are per second; 0 means "engine default" (per-IP 30).
+ddos:
+  enabled: true
+  per_ip_rate: 30
+  per_endpoint_rate: 200
+  global_rate: 10000
+  ban_seconds: 600
 protocol: { enabled: true }
-bot:   { enabled: true }
+# Bot: definite bots (headless, attack tools) are blocked; a missing User-Agent
+# is challenged. An address that produces auto_ban_after bot-like requests within
+# auto_ban_window_sec is auto-banned for auto_ban_seconds. Set auto_ban_after to
+# a negative number to disable the repeat-offender ban.
+bot:
+  enabled: true
+  auto_ban_after: 5
+  auto_ban_window_sec: 60
+  auto_ban_seconds: 600
 api_protect: { enabled: true }
 upload: { enabled: true }
 ja3:   { enabled: true }      # only fires on TLS traffic

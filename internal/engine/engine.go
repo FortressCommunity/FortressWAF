@@ -37,6 +37,13 @@ type Decision struct {
 	ConfidenceScore float64 `json:"confidence_score,omitempty"`
 	Explainability  string  `json:"explainability,omitempty"`
 	InspectorName   string  `json:"inspector_name,omitempty"`
+
+	// BanRequest, when true, asks the caller to auto-ban the source address for
+	// BanDuration. The engine does not hold a ban list itself; it only signals
+	// that the decision justifies one, and the proxy applies it. A zero
+	// BanDuration means "use the caller's default".
+	BanRequest  bool          `json:"-"`
+	BanDuration time.Duration `json:"-"`
 }
 
 // RequestContext holds all request-derived data and inspection state for a single request.
@@ -449,25 +456,49 @@ func (e *Engine) enrichExplainability(ctx *RequestContext, dec *Decision) {
 func (e *Engine) finalDecision(ctx *RequestContext) *Decision {
 	ctx.mu.RLock()
 	score := ctx.ThreatScore
-	ctx.mu.RUnlock()
-
-	if score >= 90 {
-		return &Decision{Action: ActionBlock, Score: score, Evidence: "cumulative threat score exceeded threshold"}
-	}
-	if score >= 50 {
-		return &Decision{Action: ActionChallenge, Score: score, Evidence: "elevated threat score requires challenge"}
-	}
-
-	ctx.mu.RLock()
-	for _, d := range ctx.Decisions {
+	// Collect any ban request an inspector raised, and whether a rate-limit
+	// decision is present. These must survive into the returned decision: a
+	// flood sets BanRequest on the DDoS decision, but the accumulated score can
+	// otherwise turn the reply into a generic challenge and drop the ban.
+	var banReq *Decision
+	sawRateLimit := false
+	for i := range ctx.Decisions {
+		d := ctx.Decisions[i]
+		if d.BanRequest && banReq == nil {
+			dc := d
+			banReq = &dc
+		}
 		if d.Action == ActionRateLimit {
-			ctx.mu.RUnlock()
-			return &Decision{Action: ActionRateLimit, Score: score, Evidence: "rate limit exceeded"}
+			sawRateLimit = true
 		}
 	}
 	ctx.mu.RUnlock()
 
-	return &Decision{Action: ActionAllow, Score: 0}
+	apply := func(dec *Decision) *Decision {
+		if banReq != nil {
+			dec.BanRequest = true
+			dec.BanDuration = banReq.BanDuration
+			if dec.RuleID == "" {
+				dec.RuleID = banReq.RuleID
+				dec.RuleName = banReq.RuleName
+			}
+		}
+		return dec
+	}
+
+	// A rate-limit decision (a flood) is answered as such even when the score is
+	// high: it is a 429, not a challenge, and it carries the ban.
+	if sawRateLimit {
+		return apply(&Decision{Action: ActionRateLimit, Score: score, Evidence: "rate limit exceeded"})
+	}
+	if score >= 90 {
+		return apply(&Decision{Action: ActionBlock, Score: score, Evidence: "cumulative threat score exceeded threshold"})
+	}
+	if score >= 50 {
+		return apply(&Decision{Action: ActionChallenge, Score: score, Evidence: "elevated threat score requires challenge"})
+	}
+
+	return apply(&Decision{Action: ActionAllow, Score: 0})
 }
 
 func (e *Engine) InspectRequest(r *http.Request) (*Decision, error) {
@@ -576,4 +607,10 @@ func (e *Engine) ContextFromRequest(r *http.Request) *RequestContext {
 func (e *Engine) SetTrustedProxies(cidrs []string) []string {
 	e.proxies.SetTrustedProxies(cidrs)
 	return ParseTrustedProxies(cidrs)
+}
+
+// IsTrustedProxy reports whether ip is inside a configured trusted-proxy CIDR.
+// The proxy uses it to avoid auto-banning a hop that fronts real clients.
+func (e *Engine) IsTrustedProxy(ip string) bool {
+	return e.proxies.trusts(ip)
 }

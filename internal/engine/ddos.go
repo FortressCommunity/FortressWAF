@@ -16,6 +16,44 @@ type SlidingWindowCounter struct {
 	maxCount   int
 }
 
+// record adds a timestamp now and prunes anything older than the window.
+func (c *SlidingWindowCounter) record(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cutoff := now.Add(-c.window)
+	valid := c.timestamps[:0]
+	for _, t := range c.timestamps {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+	c.timestamps = append(valid, now)
+}
+
+// count returns the number of timestamps still inside the window.
+func (c *SlidingWindowCounter) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cutoff := time.Now().Add(-c.window)
+	n := 0
+	for _, t := range c.timestamps {
+		if t.After(cutoff) {
+			n++
+		}
+	}
+	return n
+}
+
+// lastSeen returns the newest timestamp, or the zero time when empty.
+func (c *SlidingWindowCounter) lastSeen() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.timestamps) == 0 {
+		return time.Time{}
+	}
+	return c.timestamps[len(c.timestamps)-1]
+}
+
 type DDoSProtection struct {
 	mu              sync.RWMutex
 	devMode         bool
@@ -25,6 +63,7 @@ type DDoSProtection struct {
 	perSessionRate  int
 	burstAllowance  int
 	windowSize      time.Duration
+	autoBanDuration time.Duration
 
 	ipCounters       map[string]*SlidingWindowCounter
 	sessionCounters  map[string]*SlidingWindowCounter
@@ -37,24 +76,60 @@ type DDoSProtection struct {
 	done          chan struct{}
 }
 
+// DDoSOptions configures the flood thresholds and the auto-ban behaviour.
+// A zero field falls back to the default below; PerIPBan < 0 disables auto-ban.
+type DDoSOptions struct {
+	GlobalRate      int
+	PerIPRate       int
+	PerEndpointRate int
+	PerSessionRate  int
+	// PerIPBan is how long an address that trips the per-IP rate is banned.
+	// Zero -> default (10m). Negative -> never auto-ban (429 only).
+	PerIPBan time.Duration
+}
+
 func NewDDoSProtection(devMode bool) *DDoSProtection {
+	return NewDDoSProtectionWithOptions(devMode, DDoSOptions{})
+}
+
+func NewDDoSProtectionWithOptions(devMode bool, opts DDoSOptions) *DDoSProtection {
+	if opts.GlobalRate <= 0 {
+		opts.GlobalRate = 10000
+	}
+	if opts.PerIPRate <= 0 {
+		// 30 req/s per address: comfortably above a real browser's burst
+		// (a page load is a few dozen requests over seconds) and low enough
+		// that a flood trips it immediately.
+		opts.PerIPRate = 30
+	}
+	if opts.PerEndpointRate <= 0 {
+		opts.PerEndpointRate = 200
+	}
+	if opts.PerSessionRate <= 0 {
+		opts.PerSessionRate = 200
+	}
+	if opts.PerIPBan == 0 {
+		opts.PerIPBan = 10 * time.Minute
+	}
+
 	d := &DDoSProtection{
 		devMode:          devMode,
-		globalRate:       10000,
-		perIPRate:        100,
-		perEndpointRate:  500,
-		perSessionRate:   200,
+		globalRate:       opts.GlobalRate,
+		perIPRate:        opts.PerIPRate,
+		perEndpointRate:  opts.PerEndpointRate,
+		perSessionRate:   opts.PerSessionRate,
 		burstAllowance:   20,
 		windowSize:       time.Second,
+		autoBanDuration:  opts.PerIPBan,
 		ipCounters:       make(map[string]*SlidingWindowCounter),
 		sessionCounters:  make(map[string]*SlidingWindowCounter),
 		endpointCounters: make(map[string]*SlidingWindowCounter),
 		slowLorisTimers:  make(map[string]time.Time),
 		slowPOSTTimers:   make(map[string]time.Time),
 		globalCounter: &SlidingWindowCounter{
-			timestamps: make([]time.Time, 0, 10020),
+			timestamps: make([]time.Time, 0, opts.GlobalRate+20),
 			window:     time.Second,
-			maxCount:   10020,
+			maxCount:   opts.GlobalRate + 20,
 		},
 		done: make(chan struct{}),
 	}
@@ -130,7 +205,7 @@ func (d *DDoSProtection) detectHTTPFlood(ctx *RequestContext) *Decision {
 
 	ipCounter := d.getOrCreateCounter(d.ipCounters, ctx.RealIP)
 	if !d.checkRate(ipCounter, d.perIPRate) {
-		return &Decision{
+		dec := &Decision{
 			Action:   ActionRateLimit,
 			RuleID:   "DDoS001",
 			RuleName: "HTTP Flood - IP",
@@ -138,6 +213,13 @@ func (d *DDoSProtection) detectHTTPFlood(ctx *RequestContext) *Decision {
 			Score:    65,
 			Evidence: fmt.Sprintf("IP %s exceeded rate limit: %d req/s", ctx.RealIP, d.perIPRate),
 		}
+		// A per-IP flood is exactly the case that warrants an auto-ban. A
+		// negative duration disables it and only the 429 is returned.
+		if d.autoBanDuration > 0 {
+			dec.BanRequest = true
+			dec.BanDuration = d.autoBanDuration
+		}
+		return dec
 	}
 
 	epCounter := d.getOrCreateCounter(d.endpointCounters, ctx.Path)
