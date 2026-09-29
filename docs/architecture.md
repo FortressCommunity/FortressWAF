@@ -198,3 +198,23 @@ Performance varies significantly by hardware, rule count, and configuration. The
 | Rule engine (100 rules) | ~100μs |
 | Rule engine (10K rules) | ~2ms |
 | ML inference | ~5ms |
+
+## Rust implementation
+
+The backend is a cargo workspace under `rust/`, mapping cleanly onto the pipeline
+stages above:
+
+| Concern | Crate |
+|---|---|
+| Detection engine + request model | `rust/crates/core` |
+| YAML config (defaults, validation, hot reload) | `rust/crates/config` |
+| rate limit, blocklist, session, geo, reputation, siem, ml, tenant, sites, billing, compliance, traincorpus | `rust/crates/services` |
+| Proxy entry point, WAF handler, admin API, TLS, servers | `rust/crates/proxy` |
+| `fortressctl` CLI + `healthcheck` | `rust/crates/ctl` |
+
+The request pipeline, decision ordering, and inspector set are as described in
+the stages above. TLS termination uses `rustls` (TLS 1.2 / 1.3, optional mTLS
+client verification), configured from `tls.cert_file` / `tls.key_file`. ACME
+auto-provisioning is not implemented. See
+[`rust/DEVIATIONS.md`](../rust/DEVIATIONS.md) for the full, itemised list of
+behavioural notes.

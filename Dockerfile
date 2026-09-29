@@ -1,40 +1,32 @@
-# Stage 1: Builder
-FROM golang:1.25.13-alpine AS builder
+# Stage 1: Builder (Rust)
+FROM rust:1-slim-bookworm AS builder
 
 WORKDIR /app
 
-RUN apk add --no-cache git ca-certificates tzdata
+# The pure-Rust crates need a C toolchain for a couple of transitive deps, and
+# pkg-config for any that probe the system. No OpenSSL is required: TLS is
+# rustls (ring), which is pure Rust.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential pkg-config ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY go.mod go.sum ./
-RUN go mod download
+COPY rust/ ./rust/
 
-COPY . .
+WORKDIR /app/rust
 
-# Static binaries so the distroless runtime image needs no libc.
-RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w -extldflags '-static'" \
-    -o /app/fortresswaf \
-    ./cmd/proxy
-
-RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w -extldflags '-static'" \
-    -o /app/fortressctl \
-    ./cmd/ctl
-
-# Tiny probe used by the image and compose healthchecks.
-RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w -extldflags '-static'" \
-    -o /app/healthcheck \
-    ./cmd/healthcheck
+RUN cargo build --release --locked \
+    && strip target/release/fortresswaf \
+    && strip target/release/fortressctl \
+    && strip target/release/healthcheck
 
 # Stage 2: Final runtime image (distroless, no shell)
-FROM gcr.io/distroless/static-debian12:latest
+FROM gcr.io/distroless/cc-debian12:latest
 
 USER 65534:65534
 
-COPY --from=builder /app/fortresswaf /fortresswaf
-COPY --from=builder /app/fortressctl /fortressctl
-COPY --from=builder /app/healthcheck /healthcheck
+COPY --from=builder /app/rust/target/release/fortresswaf /fortresswaf
+COPY --from=builder /app/rust/target/release/fortressctl /fortressctl
+COPY --from=builder /app/rust/target/release/healthcheck /healthcheck
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 

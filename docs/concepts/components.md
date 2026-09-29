@@ -9,16 +9,16 @@ This document provides in-depth coverage of FortressWAF's internal components: t
 
 ## Engine
 
-**Package**: `internal/engine/`
+**Package**: `rust/crates/core/src/` (inspectors in `inspectors/`)
 
-The engine is the core of FortressWAF. It implements a pipeline of 18 inspectors that each analyze incoming requests independently.
+The engine is the core of FortressWAF. It implements a pipeline of inspectors that each analyze incoming requests independently.
 
 ### Inspector Interface
 
-```go
-type Inspector interface {
-    Name() string
-    Inspect(ctx *RequestContext) (*Decision, error)
+```rust
+pub trait Inspector: Send + Sync {
+    fn name(&self) -> &str;
+    fn inspect(&self, ctx: &mut RequestContext) -> Result<Option<Decision>, EngineError>;
 }
 ```
 
@@ -51,38 +51,52 @@ Execution rules:
 | Any | RateLimit | If any inspector returned rate_limit |
 | Else | Allow | Normal request |
 
-### 18 Inspectors
+### 25 Inspectors
+
+Files live in `rust/crates/core/src/inspectors/` (and `middleware.rs` for the
+last few).
 
 | # | Inspector | File | Detection Method |
 |---|-----------|------|------------------|
-| 1 | CAPTCHA | `auth.go` | Token verification with reCAPTCHA/hCaptcha |
-| 2 | JWT | `auth.go` | Token validation, JWKS caching, claims check |
-| 3 | OAuth | `auth.go` | Token introspection (RFC 7662) |
-| 4 | mTLS | `mtls.go` | Client certificate validation, CA chain, policy OID |
-| 5 | GraphQL | `graphql.go` | Query depth, cost analysis, alias/batch limits |
-| 6 | gRPC | `grpc.go` | Message size limits, per-service rate limiting |
-| 7 | SOAP | `soap.go` | XML schema validation, nesting depth |
-| 8 | Bot | `bot.go` | User-Agent matching, headless browser detection, JS challenge |
-| 9 | DDoS | `ddos.go` | Slow loris, slow POST, cache busting, adaptive rate limits |
-| 10 | SQLi | `sqli.go` | Tokenizer + 15 regex patterns, encoding bypass detection |
-| 11 | XSS | `xss.go` | Reflected/stored/DOM patterns, event handler detection |
-| 12 | API Protect | `api_protect.go` | OpenAPI schema enforcement, shadow API discovery |
-| 13 | RCE | `rce.go` | Shell injection, SSTI, EL injection, deserialization, Log4Shell |
-| 14 | Protocol | `protocol.go` | Verb tampering, header smuggling, malformed requests |
-| 15 | Upload | `upload.go` | MIME validation, magic bytes, extension allow/block lists |
-| 16 | Credential | `credential.go` | Brute force, credential stuffing, password spray detection |
-| 17 | WebSocket | `websocket.go` | Frame type validation, rate limiting, origin check |
-| 18 | Response Inspect | `middleware.go` | Response body analysis for data leakage |
+| 1 | Parser hardener | `parser.rs` | Normalization/unicode/traversal, parser differentials |
+| 2 | Desync | `desync.rs` | CL.TE / TE.CL request smuggling, obs-fold |
+| 3 | JA3 | `ja3.rs` | TLS fingerprint (known-bad scanner hashes) |
+| 4 | Behavioral | `behavioral.rs` | Velocity, IP reputation, path entropy |
+| 5 | Adaptive | `adaptive.rs` | JS / CAPTCHA / tarpit / block escalation |
+| 6 | WASM | `wasm.rs` | WASM module sandbox (off by default) |
+| 7 | CAPTCHA | `middleware.rs` | Token verification with reCAPTCHA/hCaptcha |
+| 8 | JWT | `auth.rs` | Token validation, JWKS caching, claims check |
+| 9 | OAuth | `auth.rs` | Token introspection (RFC 7662) |
+| 10 | mTLS | `mtls.rs` | Client certificate validation, CA chain, policy OID |
+| 11 | GraphQL | `graphql.rs` | Query depth, cost analysis, alias/batch limits |
+| 12 | gRPC | `middleware.rs` | Message size limits, per-service rate limiting |
+| 13 | SOAP | `middleware.rs` | XML schema validation, nesting depth |
+| 14 | Bot | `bot.rs` | User-Agent matching, headless browser detection, JS challenge |
+| 15 | DDoS | `ddos.rs` | Slow loris, slow POST, cache busting, adaptive rate limits |
+| 16 | SQLi | `sqli.rs` | Tokenizer + 15 regex patterns, encoding bypass detection |
+| 17 | XSS | `xss.rs` | HTML tag / event handler / JS sink / polyglot detection |
+| 18 | API Protect | `api_protect.rs` | Sensitive paths, GraphQL abuse, XXE, shadow API |
+| 19 | RCE | `rce.rs` | Shell injection, SSTI, EL injection, deserialization, Log4Shell |
+| 20 | Protocol | `protocol.rs` | Verb tampering, header smuggling, malformed requests |
+| 21 | Upload | `upload.rs` | MIME validation, magic bytes, extension allow/block lists |
+| 22 | Credential | `credential.rs` | Brute force, credential stuffing, password spray detection |
+| 23 | WebSocket | `websocket.rs` | Frame type validation, rate limiting, origin check |
+| 24 | Response Inspect | `response_leak.rs` | Response body analysis for data leakage |
+| 25 | eBPF | `ebpf.rs` | Packet telemetry counters (off by default) |
+
+Rewrite rules (`rewrite.rs`) are applied by the proxy, not run as an inspector.
 
 ### Concurrency
 
-- Engine uses `sync.RWMutex` for thread-safe inspector updates
-- Hot-reload via `UpdateInspector()` allows runtime inspector swaps
+- The engine holds its inspector list behind `parking_lot::RwLock`, so an
+  inspector can be swapped at runtime via `Engine::update_inspector()`.
+- Inspectors that keep per-IP state (DDoS, bot, adaptive, behavioral) use their
+  own `Mutex`/`RwLock` around plain maps.
 - `InspectRequest()` is safe for concurrent use
 
 ## Configuration System
 
-**Package**: `internal/config/`
+**Package**: `rust/crates/config/`
 
 ### Architecture
 
@@ -108,35 +122,31 @@ Execution rules:
 
 ### Config Structure (30+ sections)
 
-```go
-type Config struct {
-    Sites        []SiteConfig
-    Rules        []RuleConfig
-    TLS          TLSConfig
-    Admin        AdminConfig
-    ML           MLConfig
-    Redis        RedisConfig
-    DB           DBConfig
-    JWT          JWTConfig
-    OAuth        OAuthConfig
-    GraphQL      GraphQLConfig
-    MTLS         MTLSConfig
-    WebSocket    WebSocketConfig
-    SIEM         SIEMConfig
-    RewriteRules []RewriteRuleConfig
-    SQLI         FeatureConfig
-    XSS          FeatureConfig
-    RCE          FeatureConfig
-    DDoS         FeatureConfig
-    Protocol     FeatureConfig
-    Bot          FeatureConfig
-    APIProtect   FeatureConfig
-    Upload       FeatureConfig
-    Credential   CredentialConfig
-    CAPTCHA      CAPTCHAConfig
-    SOAP         SOAPConfig
-    GRPC         GRPCConfig
-    Prometheus   PrometheusConfig
+```rust
+pub struct Config {
+    pub sites: Vec<SiteConfig>,
+    pub rules: Vec<RuleConfig>,
+    pub tls: TlsConfig,
+    pub admin: AdminConfig,
+    pub ml: MlConfig,
+    pub redis: RedisConfig,
+    pub db: DbConfig,
+    pub jwt: JwtConfig,
+    pub oauth: OAuthConfig,
+    pub graphql: GraphQlConfig,
+    pub mtls: MtlsConfig,
+    pub websocket: WebSocketConfig,
+    pub siem: SiemConfig,
+    pub rewrite_rules: Vec<RewriteRuleConfig>,
+    pub sqli: FeatureConfig,
+    pub xss: FeatureConfig,
+    pub rce: FeatureConfig,
+    pub ddos: DDoSConfig,
+    pub protocol: FeatureConfig,
+    pub bot: BotConfig,
+    pub api_protect: FeatureConfig,
+    pub upload: FeatureConfig,
+    pub credential: CredentialConfig,
     // ... and more
 }
 ```
@@ -151,8 +161,7 @@ The `Manager` watches the config file directory for changes. On write events, it
 
 ## REST API
 
-**Package**: implemented in `cmd/proxy/` (the admin router). The former
-`internal/api/` package was removed; it was never wired into the binary.
+**Package**: implemented in `rust/crates/proxy/src/server.rs` (the admin router).
 
 ### Server Architecture
 
@@ -187,7 +196,7 @@ All `/api/v1/*` endpoints require a Bearer token from the configured `admin.api_
 
 ## Rate Limiter
 
-**Package**: `internal/ratelimit/`
+**Package**: `rust/crates/services/src/ratelimit.rs`
 
 ### Algorithms
 
@@ -210,12 +219,12 @@ All `/api/v1/*` endpoints require a Bearer token from the configured `admin.api_
 ### Implementation
 
 - In-memory counters with optional Redis backend
-- Background cleanup goroutine for stale entries
+- Explicit `cleanup()` calls evict stale entries (callers schedule them)
 - Priority queue with double-burst for priority keys
 
 ## IP Reputation
 
-**Package**: `internal/reputation/`
+**Package**: `rust/crates/services/src/reputation.rs`
 
 ### Features
 
@@ -223,7 +232,7 @@ All `/api/v1/*` endpoints require a Bearer token from the configured `admin.api_
 - **Proxy/VPN detection**: Commercial proxy and VPN provider ranges
 - **ASN filtering**: Allow/block by autonomous system number
 - **CIDR matching**: Custom allowlist and blocklist CIDR ranges
-- **GeoIP integration**: Country-based allow/block via `internal/geo/`
+- **GeoIP integration**: Country-based allow/block via `rust/crates/services/src/geo.rs`
 
 ### Data Sources
 
@@ -238,7 +247,7 @@ All `/api/v1/*` endpoints require a Bearer token from the configured `admin.api_
 
 ## Session Manager
 
-**Package**: `internal/session/`
+**Package**: `rust/crates/services/src/session.rs`
 
 ### Features
 
@@ -262,7 +271,7 @@ Request → Session Middleware → Parse Cookie → Load Session → Attach to C
 
 ## SIEM Exporter
 
-**Package**: `internal/siem/`
+**Package**: `rust/crates/services/src/siem.rs`
 
 ### Architecture
 

@@ -7,7 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Rewritten in Rust; the Go backend was removed.** The whole backend is now a
+  cargo workspace under `rust/` with five crates (`core`, `config`, `services`,
+  `proxy`, `ctl`). The Dockerfile, `Makefile`, CI workflows, `install.sh`, and
+  pre-commit config all build and lint Rust. Rule IDs, scores, decision
+  ordering, threshold semantics, and config defaults are preserved, and the
+  attack corpus is replayed to the same documented detection floors with zero
+  false positives on the benign corpus (288 tests pass; `cargo clippy` and
+  `cargo fmt --check` are clean).
+- Detection parity is enforced by `rust/crates/proxy/tests/attack_corpus.rs`,
+  which fails the build if any category drops below its floor.
+- TLS termination uses `rustls` (no OpenSSL); ACME auto-provisioning is not
+  implemented — supply `tls.cert_file` / `tls.key_file`.
+
+### Removed
+- The Go backend (`cmd/`, `internal/`, `go.mod`, `go.sum`, `.golangci.yml`,
+  `tools/`, the Go test files, and `benchmark.txt`). Behavioural differences
+  introduced by the rewrite are listed in `rust/DEVIATIONS.md`.
+
 ### Added
+- **Auto-ban on DDoS and repeat bot offenders.** A per-IP flood (`DDoS001`) now
+  bans the source address for `ddos.ban_seconds` (default 10m), and an address
+  that produces `bot.auto_ban_after` bot-like requests within the window
+  is banned too. Bans are time-limited, reversible, logged, and raise an alert.
+  Loopback and trusted-proxy addresses are never auto-banned.
+- DDoS and bot thresholds are configurable (`ddos.per_ip_rate`,
+  `ddos.per_endpoint_rate`, `ddos.global_rate`, `ddos.ban_seconds`,
+  `bot.auto_ban_after`, `bot.auto_ban_window_sec`, `bot.auto_ban_seconds`).
+  A negative ban value disables the auto-ban.
+- Missing User-Agent (`BOT001`) is now challenged instead of only monitored.
+- The client IP is read from `CF-Connecting-IP` when the peer is a trusted
+  proxy, so behind Cloudflare the WAF sees the real visitor address rather than
+  the Cloudflare edge. Rate limits, auto-bans, and the audit log are accurate.
 - **Protected-domain management with DNS verification.** Add a domain from the
   console; it is protected only after the WAF itself resolves its A/AAAA records
   and confirms one points at this server (`server.expected_ips`). Removal and a
@@ -28,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a client error shows a retry screen instead of a blank page.
 - **`scripts/deploy.sh`**: rebuild → recreate → restart Caddy (refresh service
   DNS) → verify the browser path end to end.
+
+### Fixed
+- The DDoS/rate-limit auto-ban request survives into the final decision; a high
+  accumulated threat score previously turned a flood into a generic challenge
+  and dropped the ban.
 
 ### Changed
 - **Login now requires username AND password.** Previously a match on either

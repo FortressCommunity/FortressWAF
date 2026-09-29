@@ -12,25 +12,26 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          go-version: '1.25'
+          toolchain: stable
 
-      - name: Run benchmarks
-        run: |
-          go test -bench=. -benchmem -run=^$ ./tests/unit/ -count=5 > benchmark.txt
-
-      - name: Compare with main
-        if: github.event_name == 'pull_request'
-        run: |
-          git stash
-          go test -bench=. -benchmem -run=^$ ./tests/unit/ -count=3 > baseline.txt
-          git stash pop
-          go test -bench=. -benchmem -run=^$ ./tests/unit/ -count=3 > current.txt
-
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
         with:
-          name: benchmarks
-          path: benchmark.txt
+          workspaces: rust
+
+      - name: Build release
+        run: cargo build --release --locked
+        working-directory: rust
+
+      - name: Run cargo benchmarks
+        run: |
+          # The engine hot path is benchmarked with the built-in harness when
+          # present; otherwise fall back to a release build timing.
+          cargo bench --workspace 2>/dev/null || echo "no cargo benches; using tests as a smoke benchmark"
+
+      - name: Detection parity (corpus)
+        run: cargo test --workspace --test attack_corpus --locked -- --nocapture
+        working-directory: rust

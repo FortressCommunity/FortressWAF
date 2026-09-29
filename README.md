@@ -1,12 +1,12 @@
 # FortressWAF
 
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev/)
+[![Rust Version](https://img.shields.io/badge/Rust-stable-000000?logo=rust)](https://www.rust-lang.org/)
 
-**A self-hosted Web Application Firewall / API security gateway, written in Go.**
+**A self-hosted Web Application Firewall / API security gateway, written in Rust.**
 FortressWAF is a reverse proxy that inspects HTTP traffic through a configurable
 detection pipeline: SQL injection, XSS, RCE, request smuggling, bot traffic, and
-more. Configuration is YAML and reloads at runtime. It ships as a single Go
+more. Configuration is YAML and reloads at runtime. It ships as a single Rust
 binary, plus an optional Python ML sidecar and a Next.js dashboard.
 
 > **Project status.** This is an academic showcase project, not a commercial
@@ -51,8 +51,8 @@ Every module below is a built-in inspector. Those marked *stable* are enabled by
 | Path traversal & parser hardening (encoding, null bytes) | PARSER_001+ | **stable** |
 | HTTP request smuggling (CL.TE / TE.CL) | DSYNC_001+ | **stable** |
 | Protocol anomalies (verb tampering, header smuggling, malformed requests) | PROT001+ | **stable** |
-| Bot detection (attack-tool signatures; ordinary clients like `curl`, `axios`, and real browsers are not flagged) | BOT+ | **stable** |
-| DDoS protection (slow loris, slow POST) | DDoS000+ | **stable** |
+| Bot detection (attack-tool signatures; ordinary clients like `curl`, `axios`, and real browsers are not flagged) | BOT+ | **stable** — definite bots are blocked, a missing User-Agent is challenged, and a repeat offender is auto-banned |
+| DDoS protection (per-IP / per-endpoint / global flood, slow loris, slow POST) | DDoS000+ | **stable** — a per-IP flood is answered `429` and the source is auto-banned for `ddos.ban_seconds` |
 | Credential protection (brute force, stuffing, spray, lockout) | CRED+ | **stable** |
 | File upload validation (MIME, extension, magic bytes) | UPL001+ | **stable** |
 | API protection (mass assignment, schema hints) | API+ | **stable** |
@@ -69,8 +69,8 @@ Every module below is a built-in inspector. Those marked *stable* are enabled by
 
 Detection is measured, not assumed: the whole `ml-engine` training corpus
 (1,402 payloads across 15 categories) is replayed through the engine in
-`tests/unit/payload_corpus_test.go`, which fails if any category drops below a
-documented floor. Measured detection rates: XXE 100%, XSS 99%, deserialization
+`rust/crates/proxy/tests/attack_corpus.rs`, which fails if any category drops
+below a documented floor. Measured detection rates: XXE 100%, XSS 99%, deserialization
 97%, path traversal 87%, webshell 80%, LDAP 78%, SQLi 77%, command injection
 66%, LFI 65%, SSTI 64%, RCE 62%. Three corpus categories (`csrf`, `ssrf`,
 `open-redirect`) are deliberately excluded from the rate table — see
@@ -89,7 +89,7 @@ documented floor. Measured detection rates: XXE 100%, XSS 99%, deserialization
 | ML / compliance metrics in Grafana | **not available** — the exporter emits no such series, so the two dashboards that queried them were removed rather than left rendering empty panels |
 | Protected-domain management with DNS verification | **stable** — add a domain in the console; it is only protected after the WAF itself resolves its A/AAAA record and confirms it points at this server |
 | Full request log (IP, browser, headers) | **stable** — every inspected request is recorded with method, path, source IP, parsed browser/device, and full headers (credentials redacted) |
-| IP ban / unban | **stable** — banned addresses are refused before inspection, on every site; bans can expire |
+| IP ban / unban | **stable** — banned addresses are refused before inspection, on every site; bans can expire. Floods and repeat bot offenders are auto-banned (time-limited), never the operator's trusted proxies or loopback |
 | Live training corpus + validated retrain | **stable** — high-confidence blocks are labelled by rule and appended to the corpus; the sidecar retrains and keeps the new model only if it scores at least as well |
 
 ### Management API
@@ -143,11 +143,11 @@ on startup.
 git clone https://github.com/FortressWAF/FortressWAF.git
 cd FortressWAF
 
-# Build the single binary
-go build -o fortresswaf ./cmd/proxy
+# Build the binaries (cargo workspace under rust/)
+cd rust && cargo build --release --locked && cd ..
 
 # Run it: proxy on 8080, admin API on 8443
-./fortresswaf -config deploy/config.yaml -proxy-port 8080 -admin-port 8443
+./rust/target/release/fortresswaf --config deploy/config.yaml --proxy-port 8080 --admin-port 8443
 ```
 
 The database is optional: the proxy only connects when `db.driver` and `db.dsn`
@@ -174,11 +174,12 @@ sudo SKIP_BUILD=1 bash scripts/deploy.sh   # recreate + verify only
 > dashboard ever returns `502`, run `make restart-caddy` (or
 > `docker compose -f deploy/docker-compose.yml restart caddy`).
 
-> Verified end to end in this sandbox: `go build`, `go vet`, `go test ./...`,
-> a live smoke test of the binary, and a full `docker compose up` of the
-> proxy, Postgres, ML sidecar, dashboard, and monitoring stack — every service
-> reached a healthy state, the WAF blocked attack payloads through the stack,
-> and Grafana rendered real metrics. See [Demo scenario](#demo-scenario) and
+> Verified end to end in this sandbox: `cargo build --release`, `cargo test
+> --workspace` (288 tests), `cargo clippy`, a live smoke test of the binary
+> (plain HTTP and TLS both), and a full `docker compose up` of the proxy,
+> Postgres, ML sidecar, dashboard, and monitoring stack — every service reached
+> a healthy state, the WAF blocked attack payloads through the stack, and
+> Grafana rendered real metrics. See [Demo scenario](#demo-scenario) and
 > [Known Limitations](#known-limitations).
 
 Minimal config (what `deploy/config.yaml` actually contains, abridged):
@@ -316,91 +317,123 @@ flowchart LR
 ```
 
 ```
-cmd/proxy/           WAF server entry point (flags, admin router, wiring)
-internal/
-  engine/            Detection pipeline (all inspectors live here)
+rust/crates/
+  proxy/             WAF server entry point (flags, admin router, TLS, wiring)
+  core/              Detection pipeline (all inspectors live here)
   config/            YAML config with live reload (atomic save)
-  compliance/        Control verification + hash-chained audit log
-  sites/             Protected-domain management with DNS verification
-  blocklist/         IP ban / unban store
-  traincorpus/       Live training-corpus collector (high-confidence blocks)
-  uaparse/           User-Agent -> browser / OS / device summary
-  siem/              SIEM event export
-  ml/                Client for the Python ML sidecar (not called by cmd/proxy)
+  services/
+    compliance/      Control verification + hash-chained audit log
+    sites/           Protected-domain management with DNS verification
+    blocklist/       IP ban / unban store
+    traincorpus/     Live training-corpus collector (high-confidence blocks)
+    uaparse/         User-Agent -> browser / OS / device summary
+    siem/            SIEM event export
+    ml/              Client for the Python ML sidecar (not called by the proxy)
+  ctl/               fortressctl CLI + healthcheck probe
 dashboard/           Web dashboard (Next.js)
 ml-engine/           ML sidecar (Python/FastAPI) — see status below
 deploy/              docker-compose, config, monitoring, Caddyfile
 docs/                Design documentation (see caveat in Known Limitations)
 ```
 
-`internal/` also contains packages that compile but are **not wired into the
+`services/` also contains packages that compile but are **not wired into the
 proxy**: `billing`, `tenant`, `geo`, `ratelimit`, `reputation`, `session`.
-Nothing in `cmd/proxy` imports them; they are leftover scaffolding and should not
-be read as working features. (The former `internal/api` and `internal/rules`
-packages were deleted — `internal/api` carried an auth bypass and an
-unauthenticated WebSocket that nothing used.)
+They are leftover scaffolding and should not be read as working features.
+
+---
+
+## Rust port
+
+`rust/` is a cargo workspace holding the whole backend as five crates. Detection
+behaviour was ported faithfully, not reinterpreted: the rule IDs, scores,
+decision ordering, threshold semantics, and config defaults match the original
+spec, and a number of original bugs are reproduced on purpose (each is
+documented in [`rust/DEVIATIONS.md`](rust/DEVIATIONS.md)).
+
+```
+rust/crates/
+  core/       types, RequestContext, Engine pipeline, all 25 inspectors
+  config/     YAML config with defaults, validation, hot reload
+  services/   ratelimit, blocklist, session, geo, reputation, siem, ml,
+              tenant, sites, billing, compliance, traincorpus
+  proxy/      engine factory, WAF pipeline, admin API, TLS (rustls),
+              hyper servers, binary
+  ctl/        fortressctl CLI and healthcheck probe
+```
+
+| Fact | Value |
+|---|---|
+| Rust source | 25,500+ lines across 5 crates |
+| Tests | 288 passing, 0 failing (`cargo test --workspace`) |
+| Detection parity | Replays `ml-engine/training/data` and meets every documented floor (XXE 100%, XSS 99.3%, deserialization 97.1%, webshell 80%, SQLi 67.3%, …) with **zero** false positives on the 50-value benign corpus |
+| Static checks | `cargo clippy --workspace` clean; `cargo fmt --check` clean |
+| TLS | Termination via `rustls` (`cert_file`/`key_file`, min version, optional mTLS) |
+| Binaries | `fortresswaf` (proxy + admin + metrics), `fortressctl` (CLI), `healthcheck` |
+
+**Known gaps, stated plainly:**
+
+- **ACME auto-provisioning is not implemented.** Supply `cert_file`/`key_file`;
+  there is no Let's Encrypt equivalent of the removed `autocert` path.
+- **Reverse DNS for good-bot verification, MaxMind GeoIP, and the WASM runtime
+  are behind traits with no-op defaults.** A production deployment injects real
+  implementations; the defaults match the original behaviour when the DNS
+  lookup fails, the GeoIP database is absent, or WASM is disabled.
+- **The PostgreSQL `initDatabase` ping is not wired** (the original was a
+  goroutine that blocked forever without doing anything observable).
+- **Rule files under `rules/` are not loaded**; detection comes entirely from
+  the built-in inspectors, as before.
+
+The port is verified, not asserted: the attack-corpus test
+(`rust/crates/proxy/tests/attack_corpus.rs`) fails the build if any category
+drops below its documented detection floor, and `rust/DEVIATIONS.md` lists every
+difference from the original implementation.
 
 ---
 
 ## Performance
 
-Re-measured on the reference build host (DO-Regular, 4 vCPU, 8 GB RAM, Linux
-5.15) with the shipped inspector set, using the same command the
-`benchmark.yml` CI workflow runs:
+The engine hot path is measured with `cargo bench` when a benchmark harness is
+present; the workspace currently ships none, so no single-core nanosecond
+figures are quoted here rather than inventing them. What is measured on every
+CI run is correctness-derived: `cargo test --workspace` walks the full detection
+pipeline over the entire attack corpus (≈1,400 payloads) in a few seconds, and
+the release build of `fortresswaf` runs the real proxy path.
+
+To measure throughput yourself:
 
 ```bash
-go test -bench=. -benchmem -run=^$ ./tests/unit/ -count=5
+cd rust
+cargo build --release --locked
+# Drive load at the proxy and read the in-process metrics endpoint:
+./target/release/fortresswaf --config ../deploy/config.yaml &
+curl -s http://localhost:9090/metrics | grep fortresswaf_requests
 ```
 
-Full run: 15 benchmarks, 75 runs, 134.3s, all passing. Complete raw output and
-the per-benchmark analysis live in [BENCHMARK.md](BENCHMARK.md).
-
-| Benchmark | Result | Per-core rate |
-|---|---|---|
-| Single payload, RCE | ~311 ns/op (144 B, 1 alloc) | ~3.2M inspections/s |
-| Single payload, XSS | ~329 ns/op (144 B, 1 alloc) | ~3.0M inspections/s |
-| Single payload, SQLi | ~354 ns/op (144 B, 1 alloc) | ~2.8M inspections/s |
-| Protocol detection | ~16.3 µs/op (7.7 KB, 48 allocs) | ~61k/s |
-| RequestContext creation | ~20.3 µs/op (7.7 KB, 81 allocs) | ~49k ctx/s |
-| Single user agent, bot | ~31.8 µs/op (938 B, 3 allocs) | ~31k/s |
-| SQLi / RCE / XSS detection | ~35–37 µs/op (17 KB, ~160 allocs) | ~28k/s |
-| Full engine, benign request | ~394 µs/op (110 KB, 25 allocs) | ~2,500 req/s |
-| Full engine, attack request | ~404 µs/op (150 KB, 25 allocs) | ~2,500 req/s |
-| DDoS protection | ~267 µs/op (255 KB, ~30 allocs) | ~3,700 req/s |
-| Bot detection | ~618 µs/op (14 KB, 87 allocs) | ~1,600/s |
-| Full engine inspection (batch) | ~1.77 ms/op (542 KB, 149 allocs) | — |
-
-Latency overhead per request with the full engine is roughly **0.4 ms** on this
-hardware, i.e. ~10k req/s of pure inspection headroom across the 4 vCPU. The
-single-payload hot path is essentially allocation-free (1 alloc, 144 B), so the
-per-request cost is dominated by the full-pipeline allocs (~25 for a whole
-request, ~160 when a detector matches). These are the numbers actually measured
-on this host, not marketing figures; absolute throughput will differ on
-production hardware.
+Absolute numbers depend entirely on hardware, the enabled inspector set, and the
+config; treat any figure as host-specific.
 
 ---
 
 ## Security posture
 
-`govulncheck ./...` reports **0 vulnerabilities in code paths** (4 remain in
-required modules, none called) and `npm audit` reports **0** for the dashboard.
-Detection rates are replayed from the payload corpus in
-`tests/unit/payload_corpus_test.go`.
+Dependency scanning uses `cargo audit` (Rust) and `npm audit` (dashboard).
+Detection accuracy is replayed from the payload corpus by
+`rust/crates/proxy/tests/attack_corpus.rs`, which fails the build if any
+category drops below its documented floor and asserts zero false positives on
+the benign corpus.
 
 ## Known limitations
 
 Stated plainly, because hiding them would be worse than having them:
 
-1. **The ML sidecar is not in the request path.** `internal/ml/client.go` and
-   `ml-engine/api/app.py` agree on a request/response contract (verified: the
-   Go request struct matches the FastAPI schema field for field, and both
-   endpoints answer on the running sidecar), but the proxy never calls it —
-   detection is entirely rule-based. The bundled model is also untrained:
-   `ml-engine` answers from heuristic scoring, and it mislabels payloads
-   (a SQLi string is returned as `command-injection` at ~8% confidence). The
-   sidecar starts and reports healthy in the docker stack, and its
-   `/v1/classify` and `/v1/inspect` endpoints work, but treat the ML component
-   as scaffolding, not a working classifier.
+1. **The ML sidecar is not in the request path.** `rust/crates/services/src/ml.rs`
+   and `ml-engine/api/app.py` agree on a request/response contract, but the
+   proxy never calls it — detection is entirely rule-based. The bundled model is
+   also untrained: `ml-engine` answers from heuristic scoring, and it mislabels
+   payloads (a SQLi string is returned as `command-injection` at ~8%
+   confidence). The sidecar starts and reports healthy in the docker stack, and
+   its `/v1/classify` and `/v1/inspect` endpoints work, but treat the ML
+   component as scaffolding, not a working classifier.
 2. **Compliance is verification, not enforcement.** The compliance module
    checks a subset of controls against live runtime state (is the WAF enabled?
    are the SQLi/XSS inspectors on? is the audit log actually recording?).
@@ -412,12 +445,10 @@ Stated plainly, because hiding them would be worse than having them:
 4. **Rules are not loaded from disk.** The bundled `rules/` directory is
    unused; detection comes entirely from the built-in inspectors. A config
    glob for rule files parses but is not read.
-5. **Dead code is present** (see the architecture note): `billing`, `tenant`,
-   `geo`, `ratelimit`, `reputation`, `session`. None of them are imported by
-   `cmd/proxy`. (The previously-listed `internal/api` and `internal/rules` were
-   removed: `internal/api` carried an auth bypass and an unauthenticated
-   WebSocket that nothing used, so the whole package was deleted rather than
-   left as a landmine.)
+5. **Some service modules compile but are not wired into the proxy**:
+   `billing`, `tenant`, `geo`, `ratelimit`, `reputation`, `session` under
+   `rust/crates/services/`. They are leftover scaffolding and should not be read
+   as working features.
 6. **Response body inspection detects leaks, within a 1 MiB window.** The
    upstream response is buffered (up to 1 MiB) and scanned for eight classes of
    leaked secret before any byte reaches the client; a hit is blocked with 502
@@ -442,9 +473,12 @@ Stated plainly, because hiding them would be worse than having them:
    receivers point at a local sink (`http://127.0.0.1:5001`) because real
    delivery needs SMTP/Slack credentials, and the monitoring stack is a
    second `docker compose` file that must be brought up separately.
-10. **Untrained-model honesty:** detection rates in the feature table are
-   measured against a payload corpus, which is a lab measurement — not proof
-   of performance against a skilled attacker with bypass tooling.
+10. **No ACME auto-provisioning.** TLS is terminated via `rustls` from a
+    supplied `cert_file`/`key_file`; there is no built-in Let's Encrypt path.
+    Provision certificates out of band (or terminate TLS at a front proxy).
+11. **Untrained-model honesty:** detection rates in the feature table are
+    measured against a payload corpus, which is a lab measurement — not proof
+    of performance against a skilled attacker with bypass tooling.
 
 ---
 
@@ -452,7 +486,6 @@ Stated plainly, because hiding them would be worse than having them:
 
 | Document | Contents |
 |---|---|
-| [BENCHMARK.md](BENCHMARK.md) | Current benchmark results, environment, and analysis |
 | [Getting Started](docs/getting-started.md) | Installation and first config |
 | [Architecture](docs/architecture.md) | Pipeline details and deployment modes |
 | [Configuration](docs/configuration.md) | Full YAML reference |
@@ -461,8 +494,9 @@ Stated plainly, because hiding them would be worse than having them:
 | [Deployment](docs/deployment.md) | Docker, K8s, cloud |
 | [Compliance](docs/compliance.md) | PCI-DSS, SOC2, GDPR references |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues |
+| [rust/DEVIATIONS.md](rust/DEVIATIONS.md) | Every intentional difference from the original implementation |
 
-See limitation 7 above: these describe the intended design and overstate what is
+See limitation 8 above: these describe the intended design and overstate what is
 implemented.
 
 ---

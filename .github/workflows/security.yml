@@ -12,10 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Run Go vulnerability check
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run Rust vulnerability check (cargo-audit)
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          cargo install cargo-audit --locked
+          cd rust && cargo audit
 
       - name: Run npm audit
         run: |

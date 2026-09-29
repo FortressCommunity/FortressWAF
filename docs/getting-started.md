@@ -156,7 +156,7 @@ curl http://localhost:8080/api/v1/metrics
 │   └── server.key
 ├── logs/                    # Log files
 │   └── access.log
-└── plugins/                 # Lua/Go plugins (Enterprise)
+└── plugins/                 # Plugin hooks (Enterprise; not implemented)
     └── custom-auth.lua
 ```
 

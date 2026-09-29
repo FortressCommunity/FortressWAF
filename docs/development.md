@@ -7,9 +7,9 @@
 
 ## Prerequisites
 
-- Go 1.25+
-- Node.js 20+ (for dashboard)
-- Python 3.12+ (for ML engine)
+- Rust (stable toolchain via `rustup`)
+- Node.js 20+ (for the dashboard)
+- Python 3.12+ (for the ML engine)
 - Docker 24+ (optional, for containerized development)
 - Make
 
@@ -17,28 +17,27 @@
 
 ```
 fortresswaf/
-├── cmd/
-│   ├── proxy/          # Main WAF proxy binary
-│   └── ctl/            # CLI management tool (fortressctl)
-├── internal/
-│   ├── api/            # REST API server and handlers
-│   ├── config/         # YAML configuration loading and hot-reload
-│   ├── engine/         # Detection engine (18 inspectors)
-│   ├── geo/            # GeoIP lookups (MaxMind)
-│   ├── ml/             # ML sidecar client
-│   ├── ratelimit/      # Rate limiting algorithms
-│   ├── reputation/     # IP reputation checks
-│   ├── rules/          # Rule DSL engine
-│   ├── session/        # Session management
-│   ├── siem/           # SIEM event export
-│   └── tenant/         # Multi-tenant support
+├── rust/
+│   └── crates/
+│       ├── proxy/      # WAF server: flags, admin router, TLS, hyper servers, binary
+│       ├── core/       # Detection engine (all inspectors) + request model
+│       ├── config/     # YAML configuration loading and hot-reload
+│       ├── services/   # blocklist, compliance, geo, ml, ratelimit, reputation,
+│       │               #   session, siem, sites, tenant, traincorpus, uaparse,
+│       │               #   billing
+│       └── ctl/        # fortressctl CLI + healthcheck probe
 ├── dashboard/          # Next.js management UI
 ├── ml-engine/          # Python ML sidecar
 ├── deploy/             # Deployment configurations
 ├── docs/               # Documentation (MkDocs)
-├── tests/              # Test suites
-└── rules/              # Default rule sets
+├── tests/
+│   └── attack-corpus/  # Attack payloads replayed by the parity test
+└── rules/              # Default rule sets (not loaded at runtime; see README)
 ```
+
+`services/` contains `billing`, `tenant`, `geo`, `ratelimit`, `reputation`, and
+`session`, which compile but are **not wired into the proxy** — leftover
+scaffolding, not working features.
 
 ## Local Development
 
@@ -48,30 +47,51 @@ fortresswaf/
 git clone https://github.com/FortressWAF/FortressWAF.git
 cd FortressWAF
 
-# Build all Go binaries
-make build
-
-# Verify compilation
-go vet ./...
+# Build all crates and the three binaries (cargo workspace under rust/)
+make build          # equivalent to: cd rust && cargo build --release --locked
 ```
 
-### 2. Run Unit Tests
+The binaries land in `rust/target/release/`: `fortresswaf` (proxy + admin API +
+metrics), `fortressctl` (CLI), and `healthcheck`.
+
+### 2. Run Tests
 
 ```bash
-# All tests
-make test
+# All tests (unit + the attack-corpus parity test)
+make test           # cd rust && cargo test --workspace --locked
 
 # Unit tests only
 make test-unit
 
-# Integration tests
+# Integration tests (the attack-corpus parity test)
 make test-integration
-
-# With race detection
-go test ./... -race -count=1
 ```
 
-### 3. Dashboard Development
+The attack-corpus test replays `ml-engine/training/data/` and
+`tests/attack-corpus/valid.txt` through the engine and fails the build if any
+category drops below its documented detection floor. See
+[`rust/DEVIATIONS.md`](../rust/DEVIATIONS.md) for what the port wires up.
+
+### 3. Lint and Format
+
+```bash
+make lint-rust      # cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --check
+make format         # cargo fmt
+```
+
+Both `clippy` and `fmt --check` are expected to be clean; CI fails otherwise.
+
+### 4. Run the proxy locally
+
+```bash
+./rust/target/release/fortresswaf \
+    --config deploy/config.yaml --proxy-port 8080 --admin-port 8443
+```
+
+Enable TLS by setting `tls.enabled: true` with `tls.cert_file` / `tls.key_file`
+(rustls). There is **no** built-in ACME path; supply certificates out of band.
+
+### 5. Dashboard Development
 
 ```bash
 cd dashboard
@@ -81,7 +101,7 @@ npm run dev  # Starts Next.js dev server on :3000
 
 The dashboard proxies API requests to the proxy admin server (`:8443` by default).
 
-### 4. ML Engine Development
+### 6. ML Engine Development
 
 ```bash
 cd ml-engine
@@ -89,7 +109,7 @@ pip install -r requirements-dev.txt
 python -m pytest tests/ -v
 ```
 
-### 5. Documentation
+### 7. Documentation
 
 ```bash
 cd docs
@@ -117,7 +137,7 @@ chore: update dependencies
 
 ### Code Style
 
-- **Go**: `go fmt ./...` before committing. The project uses `.golangci.yml` for linting rules.
+- **Rust**: `cargo fmt` before committing. Clippy must pass with `-D warnings`.
 - **TypeScript**: ESLint + Prettier (via Next.js config).
 - **Python**: Ruff for linting and formatting.
 
@@ -127,29 +147,24 @@ chore: update dependencies
 make install-hooks
 ```
 
-Runs: trailing whitespace, YAML/JSON/TOML validation, golangci-lint, ruff, prettier, markdownlint, detect-secrets.
+Runs: trailing whitespace, YAML/JSON/TOML validation, `cargo fmt`, `cargo clippy`,
+ruff, prettier, markdownlint, detect-secrets.
 
 ## Testing Guidelines
 
 ### Unit Tests
 
-- Package: `tests/unit/`
-- Table-driven tests preferred
-- Each inspector should have initialization + no-panic tests
-- Use `newTestRequest()` and `newTestContext()` helpers
+- Live in each crate under `#[cfg(test)]` modules (e.g.
+  `rust/crates/core/src/inspectors/`).
+- Each inspector has an initialization and no-false-positive test where relevant.
+- Build a request with `RequestContext::new(HttpRequest::new(method, path))` and
+  set `raw_query` / headers as needed.
 
 ### Integration Tests
 
-- Package: `tests/integration/`
-- Test real HTTP interactions with `httptest`
-- Cover TLS, ACME, OCSP scenarios
-
-### E2E Tests
-
-- Package: `tests/e2e/`
-- Tagged with `//go:build e2e`
-- Test full detection pipeline with attack corpus
-- Verify scoring and decision outputs
+- `rust/crates/proxy/tests/attack_corpus.rs` replays the real corpus.
+- The corpus lives in `tests/attack-corpus/` (benign values) and
+  `ml-engine/training/data/` (attack categories).
 
 ### Attack Corpus
 
@@ -167,30 +182,43 @@ Located in `tests/attack-corpus/`, these files contain known attack payloads:
 | `scanners.txt` | Security Scanner User-Agents | 27 |
 | `valid.txt` | Benign Requests | Various |
 
+The detection-rate categories are read from `ml-engine/training/data/`.
+
 ## Adding a New Inspector
 
-1. Create a new file in `internal/engine/` implementing the `Inspector` interface:
+1. Create a file under `rust/crates/core/src/inspectors/` implementing the
+   `Inspector` trait:
 
-```go
-type MyInspector struct {}
+```rust
+use crate::action::{Action, Decision};
+use crate::context::RequestContext;
+use crate::engine::{EngineError, Inspector};
 
-func (m *MyInspector) Name() string { return "my_inspector" }
+pub struct MyInspector;
 
-func (m *MyInspector) Inspect(ctx *engine.RequestContext) (*engine.Decision, error) {
-    // Inspection logic
-    return &engine.Decision{
-        Action:   engine.ActionBlock,
-        RuleID:   "MY-001",
-        Severity: "high",
-        Score:    90,
-    }, nil
+impl Inspector for MyInspector {
+    fn name(&self) -> &str {
+        "my_inspector"
+    }
+
+    fn inspect(&self, ctx: &mut RequestContext) -> Result<Option<Decision>, EngineError> {
+        if ctx.path.contains("bad") {
+            return Ok(Some(
+                Decision::new(Action::Block, 90.0)
+                    .with_rule_id("MY-001")
+                    .with_severity("high"),
+            ));
+        }
+        Ok(None)
+    }
 }
 ```
 
-2. Add the inspector to `EngineConfig` and `Engine` struct in `engine.go`
-3. Wire it in `cmd/proxy/main.go` `buildEngineConfig()`
-4. Add unit tests in `tests/unit/`
-5. Add attack corpus payloads if applicable
+2. Add a field to `EngineConfig` (and to the ordered `inspectors` list in
+   `Engine::new`) in `rust/crates/core/src/engine.rs`.
+3. Wire it in `rust/crates/proxy/src/engine_factory.rs` `build_engine_config()`.
+4. Add unit tests in the inspector's `#[cfg(test)]` module.
+5. Add attack corpus payloads if applicable.
 
 ## Configuration
 

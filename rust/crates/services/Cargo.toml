@@ -1,0 +1,22 @@
+[package]
+name = "fwaf-services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fwaf-core = { path = "../core" }
+fwaf-config = { path = "../config" }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+regex.workspace = true
+once_cell.workspace = true
+sha2.workspace = true
+base64.workspace = true
+ureq.workspace = true
+getrandom.workspace = true
+p256.workspace = true

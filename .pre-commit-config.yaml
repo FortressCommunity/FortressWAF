@@ -22,15 +22,21 @@ repos:
       - id: destroyed-symlinks
       - id: fix-byte-order-marker
 
-  - repo: https://github.com/golangci/golangci-lint
-    rev: v1.57.2
+  - repo: local
     hooks:
-      - id: golangci-lint
-        name: golangci-lint
-        description: Fast Go linters runner
-        entry: golangci-lint run --timeout=5m
-        language: golang
-        types: [go]
+      - id: cargo-fmt
+        name: cargo-fmt
+        description: Rust formatter
+        entry: cargo fmt --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: cargo-clippy
+        name: cargo-clippy
+        description: Rust linter
+        entry: cargo clippy --workspace --all-targets -- -D warnings
+        language: system
+        types: [rust]
         pass_filenames: false
 
   - repo: https://github.com/astral-sh/ruff-pre-commit

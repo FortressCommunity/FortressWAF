@@ -60,10 +60,10 @@ detect_os() {
     HAS_DOCKER=false
   fi
 
-  if command -v go &>/dev/null; then
-    HAS_GO=true
+  if command -v cargo &>/dev/null; then
+    HAS_RUST=true
   else
-    HAS_GO=false
+    HAS_RUST=false
   fi
 }
 
@@ -86,10 +86,10 @@ install_deps() {
     warn "Docker not found"
   fi
 
-  if [ "$HAS_GO" = true ]; then
-    info "Go found: $(go version)"
+  if [ "$HAS_RUST" = true ]; then
+    info "Rust found: $(cargo --version)"
   else
-    warn "Go not found"
+    warn "Rust (cargo) not found"
   fi
 
   if ! command -v curl &>/dev/null; then
@@ -231,8 +231,8 @@ YAML
 install_binary() {
   head "Installing as Binary"
 
-  if [ "$HAS_GO" = false ]; then
-    error "Go required for binary installation. Use --docker instead."
+  if [ "$HAS_RUST" = false ]; then
+    error "Rust (cargo) required for binary installation. Use --docker instead."
     exit 1
   fi
 
@@ -242,10 +242,10 @@ install_binary() {
   info "Cloning repository..."
   git clone --depth 1 "https://github.com/$REPO.git" "$TMP_DIR/fortresswaf"
 
-  info "Building..."
-  (cd "$TMP_DIR/fortresswaf" && go build -o "$TMP_DIR/fortresswafd" ./cmd/fortresswaf)
+  info "Building (cargo)..."
+  (cd "$TMP_DIR/fortresswaf/rust" && cargo build --release --locked)
 
-  Sudo mv "$TMP_DIR/fortresswafd" "/usr/local/bin/fortresswafd"
+  Sudo mv "$TMP_DIR/fortresswaf/rust/target/release/fortresswaf" "/usr/local/bin/fortresswafd"
   info "Binary: /usr/local/bin/fortresswafd"
 
   Sudo tee /etc/systemd/system/fortresswaf.service > /dev/null <<SYSTEMD
@@ -342,11 +342,11 @@ main() {
   if [ -z "${INSTALL_METHOD:-}" ]; then
     if [ "$HAS_DOCKER" = true ]; then
       INSTALL_METHOD=docker
-    elif [ "$HAS_GO" = true ]; then
+    elif [ "$HAS_RUST" = true ]; then
       INSTALL_METHOD=binary
     else
       INSTALL_METHOD=docker
-      warn "Neither Docker nor Go found. Will install Docker first."
+      warn "Neither Docker nor Rust found. Will install Docker first."
     fi
   fi
 
