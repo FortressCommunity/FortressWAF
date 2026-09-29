@@ -5,7 +5,7 @@
 > [README](README.md) and `deploy/config.yaml`. Where they disagree, the
 > README and the code win.
 
-FortressWAF is a Go-based Web Application Firewall with rule-based detection, rate limiting, IP reputation, and an optional ML sidecar.
+FortressWAF is a Rust-based Web Application Firewall with rule-based detection, rate limiting, IP reputation, and an optional ML sidecar. The backend is a cargo workspace under `rust/` (see the [README](../README.md#rust-port) and [`rust/DEVIATIONS.md`](../rust/DEVIATIONS.md)).
 
 ## Quick Start
 

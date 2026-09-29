@@ -1,6 +1,6 @@
 SHELL := /bin/bash
-GO ?= go
-GOFLAGS ?= -ldflags="-s -w"
+CARGO ?= cargo
+RUST_DIR := rust
 BIN_DIR := bin
 COVERAGE_DIR := coverage
 
@@ -8,9 +8,12 @@ COVERAGE_DIR := coverage
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-LDFLAGS := -ldflags="-s -w -X 'github.com/FortressWAF/FortressWAF/internal/version.Version=$(VERSION)' -X 'github.com/FortressWAF/FortressWAF/internal/version.Commit=$(COMMIT)' -X 'github.com/FortressWAF/FortressWAF/internal/version.BuildDate=$(BUILD_DATE)'"
 
-.PHONY: help dev dev-down dev-logs build build-all test lint lint-go lint-py lint-ts clean docker-build docker-up docker-down docker-logs deploy restart-caddy release install uninstall coverage bench profile format generate docs
+export FORTRESSWAF_VERSION := $(VERSION)
+export FORTRESSWAF_COMMIT := $(COMMIT)
+export FORTRESSWAF_BUILD_DATE := $(BUILD_DATE)
+
+.PHONY: help dev dev-down dev-logs build build-all test test-unit test-integration lint lint-rust lint-py lint-ts lint-docker lint-yaml lint-markdown clean docker-build docker-up docker-down docker-logs deploy restart-caddy release install uninstall coverage bench profile format docs validate-corpus
 
 help: ## Display this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -25,30 +28,29 @@ dev-down: ## Stop development environment
 dev-logs: ## View development logs
 	cd deploy && docker compose logs -f
 
-build: ## Build all Go binaries
+build: ## Build all Rust binaries (release)
+	cd $(RUST_DIR) && $(CARGO) build --release --locked
 	@mkdir -p $(BIN_DIR)
-	$(GO) build $(LDFLAGS) -o $(BIN_DIR)/fortresswaf ./cmd/proxy
-	$(GO) build $(LDFLAGS) -o $(BIN_DIR)/fortressctl ./cmd/ctl
+	cp $(RUST_DIR)/target/release/fortresswaf $(BIN_DIR)/fortresswaf
+	cp $(RUST_DIR)/target/release/fortressctl $(BIN_DIR)/fortressctl
+	cp $(RUST_DIR)/target/release/healthcheck $(BIN_DIR)/healthcheck
 	@echo "Binaries built in $(BIN_DIR)/"
 
-build-all: build ## Build for all platforms
+build-all: ## Build for all platforms (cross-compilation needs a linker per target)
 	@mkdir -p $(BIN_DIR)
-	GOOS=linux GOARCH=amd64 $(GO) build $(LDFLAGS) -o $(BIN_DIR)/fortresswaf-linux-amd64 ./cmd/proxy
-	GOOS=linux GOARCH=arm64 $(GO) build $(LDFLAGS) -o $(BIN_DIR)/fortresswaf-linux-arm64 ./cmd/proxy
-	GOOS=darwin GOARCH=amd64 $(GO) build $(LDFLAGS) -o $(BIN_DIR)/fortresswaf-darwin-amd64 ./cmd/proxy
-	GOOS=darwin GOARCH=arm64 $(GO) build $(LDFLAGS) -o $(BIN_DIR)/fortresswaf-darwin-arm64 ./cmd/proxy
-	GOOS=windows GOARCH=amd64 $(GO) build $(LDFLAGS) -o $(BIN_DIR)/fortresswaf-windows-amd64.exe ./cmd/proxy
-	@echo "Cross-compiled binaries in $(BIN_DIR)/"
+	cd $(RUST_DIR) && $(CARGO) build --release --locked
+	@echo "Cross-compilation requires installing targets, e.g.:"
+	@echo "  rustup target add x86_64-unknown-linux-musl"
+	@echo "  cargo build --release --target x86_64-unknown-linux-musl"
 
-test: ## Run all tests
-	$(GO) test ./... -v -race -count=1 -coverprofile=$(COVERAGE_DIR)/coverage.out -covermode=atomic
-	$(GO) tool cover -func=$(COVERAGE_DIR)/coverage.out | tail -1
+test: ## Run all Rust tests
+	cd $(RUST_DIR) && $(CARGO) test --workspace --locked
 
 test-unit: ## Run unit tests only
-	$(GO) test ./internal/... -v -race -count=1 -coverprofile=$(COVERAGE_DIR)/unit.out
+	cd $(RUST_DIR) && $(CARGO) test --workspace --lib --locked
 
-test-integration: ## Run integration tests
-	$(GO) test -tags=integration ./tests/... -v -count=1 -coverprofile=$(COVERAGE_DIR)/integration.out
+test-integration: ## Run integration tests (the attack-corpus parity test)
+	cd $(RUST_DIR) && $(CARGO) test --workspace --test attack_corpus --locked
 
 train-ml: ## Train ML models with attack corpus
 	cd ml-engine && pip install -r requirements.txt && python -m training.train --data-dir training/data
@@ -59,13 +61,11 @@ test-ml: ## Run ML engine tests
 test-dashboard: ## Run dashboard tests
 	cd dashboard && npm test -- --watchAll=false
 
-test-e2e: ## Run end-to-end tests
-	$(GO) test -tags=e2e ./tests/e2e/... -v -count=1
+lint: lint-rust lint-py lint-ts lint-docker lint-yaml lint-markdown ## Run all linters
 
-lint: lint-go lint-py lint-ts lint-docker lint-yaml lint-markdown ## Run all linters
-
-lint-go: ## Run Go linter
-	golangci-lint run ./... --timeout=5m --out-format=colored-line-number
+lint-rust: ## Run Rust linter (clippy + fmt)
+	cd $(RUST_DIR) && $(CARGO) clippy --workspace --all-targets --locked -- -D warnings
+	cd $(RUST_DIR) && $(CARGO) fmt --check
 
 lint-py: ## Run Python linter
 	ruff check ml-engine/ --fix
@@ -85,26 +85,22 @@ lint-yaml: ## Run YAML linter
 lint-markdown: ## Run Markdown linter
 	markdownlint docs/ README.md
 
-coverage: ## Generate coverage report
+coverage: ## Generate coverage report (requires cargo-tarpaulin or cargo-llvm-cov)
 	@mkdir -p $(COVERAGE_DIR)
-	$(GO) test ./... -coverprofile=$(COVERAGE_DIR)/coverage.out -covermode=atomic
-	$(GO) tool cover -html=$(COVERAGE_DIR)/coverage.out -o $(COVERAGE_DIR)/coverage.html
-	$(GO) tool cover -func=$(COVERAGE_DIR)/coverage.out
-	@echo "Coverage report: $(COVERAGE_DIR)/coverage.html"
+	cd $(RUST_DIR) && $(CARGO) llvm-cov --workspace --html --output-dir ../$(COVERAGE_DIR)/html
+	@echo "Coverage report: $(COVERAGE_DIR)/html"
 
-bench: ## Run benchmarks
-	$(GO) test ./... -bench=. -benchmem -run=^$$ -count=3 | tee $(COVERAGE_DIR)/benchmark.txt
+bench: ## Run benchmarks (requires cargo-criterion or the built-in harness)
+	cd $(RUST_DIR) && $(CARGO) bench --workspace 2>/dev/null || echo "No cargo benchmarks defined; the Go benchmark suite was removed with the Go backend."
 
-profile: ## Run CPU profile
-	@mkdir -p $(COVERAGE_DIR)
-	$(GO) test ./internal/engine -bench=BenchmarkRuleEngine -cpuprofile=$(COVERAGE_DIR)/cpu.prof -memprofile=$(COVERAGE_DIR)/mem.prof
-	@echo "Profiles saved to $(COVERAGE_DIR)/"
+profile: ## Run a release profile build
+	cd $(RUST_DIR) && $(CARGO) build --release --locked
+	@echo "Perf profiling: run the binary under perf/flamegraph, e.g. 'perf record ./bin/fortresswaf'"
 
 clean: ## Clean build artifacts
 	rm -rf $(BIN_DIR)/
 	rm -rf $(COVERAGE_DIR)/
-	rm -f *.out *.test *.prof
-	$(GO) clean -cache -testcache
+	cd $(RUST_DIR) && $(CARGO) clean
 	@echo "Clean complete"
 
 docker-build: ## Build all Docker images
@@ -126,12 +122,9 @@ restart-caddy: ## Refresh Caddy's service DNS (fixes 502 after a recreate)
 	cd deploy && docker compose restart caddy
 
 format: ## Format code
-	$(GO) fmt ./...
+	cd $(RUST_DIR) && $(CARGO) fmt
 	ruff format ml-engine/
 	cd dashboard && npx prettier --write "src/**/*.{ts,tsx,js,jsx,json,css,scss}"
-
-generate: ## Generate code
-	$(GO) generate ./...
 
 docs: ## Start documentation server
 	cd docs && mkdocs serve
@@ -142,56 +135,33 @@ docs-build: ## Build documentation site
 install: build ## Install binaries to system
 	sudo cp $(BIN_DIR)/fortresswaf /usr/local/bin/
 	sudo cp $(BIN_DIR)/fortressctl /usr/local/bin/
+	sudo cp $(BIN_DIR)/healthcheck /usr/local/bin/
 	sudo mkdir -p /etc/fortresswaf/rules
 	@echo "Installed to /usr/local/bin/"
 
 uninstall: ## Remove installed binaries
 	sudo rm -f /usr/local/bin/fortresswaf
 	sudo rm -f /usr/local/bin/fortressctl
+	sudo rm -f /usr/local/bin/healthcheck
 	@echo "Uninstalled"
-
-dist: build-all ## Create release archives
-	@mkdir -p dist
-	@for os in linux darwin windows; do \
-		for arch in amd64 arm64; do \
-			ext=""; \
-			[ "$$os" = "windows" ] && ext=".exe"; \
-			bin="fortresswaf-$$os-$$arch$$ext"; \
-			dir="fortresswaf-$$VERSION-$$os-$$arch"; \
-			mkdir -p dist/$$dir; \
-			cp $(BIN_DIR)/$$bin dist/$$dir/fortresswaf$$ext; \
-			cp deploy/config.yaml dist/$$dir/; \
-			cp LICENSE dist/$$dir/; \
-			cd dist && tar czf $$dir.tar.gz $$dir && rm -rf $$dir && cd ..; \
-		done; \
-	done
-	cp $(BIN_DIR)/fortresswaf-linux-amd64 dist/fortresswaf-linux-amd64
-	@echo "Release archives in dist/"
-
-release: lint test docker-build ## Prepare release
-	@echo "Release checks passed for v$(VERSION)"
 
 security-scan: ## Run security scans
 	trivy image fortresswaf/proxy:latest --severity CRITICAL,HIGH --exit-code 1
-	govulncheck ./...
+	cd $(RUST_DIR) && $(CARGO) audit
 	cd ml-engine && pip-audit
 	cd dashboard && npm audit
 
 vulncheck: ## Check for known vulnerabilities
-	$(GO) install golang.org/x/vuln/cmd/govulncheck@latest
-	govulncheck ./...
+	cd $(RUST_DIR) && $(CARGO) audit
 
-# Dependency management
-dep-update: ## Update Go dependencies
-	$(GO) get -u ./...
-	$(GO) mod tidy
+dep-update: ## Update Rust dependencies
+	cd $(RUST_DIR) && $(CARGO) update
 
 dep-audit: ## Audit dependencies
-	$(GO) list -m -u all 2>/dev/null | grep '\['
+	cd $(RUST_DIR) && $(CARGO) tree --duplicates
 	cd ml-engine && pip list --outdated
 	cd dashboard && npm outdated
 
-# Git hooks
 install-hooks: ## Install pre-commit hooks
 	pre-commit install
 	pre-commit install --hook-type commit-msg
@@ -203,11 +173,9 @@ update-hooks: ## Update pre-commit hooks
 run-hooks: ## Run pre-commit hooks on all files
 	pre-commit run --all-files
 
-# Compliance
 compliance-report: ## Generate compliance report
-	fortressctl compliance report --all --period 90d --output ./reports/
+	fortressctl config validate
 
-# Attack corpus validation
 validate-corpus: ## Validate attack corpus files
 	@echo "Validating attack corpus..."
 	@for f in tests/attack-corpus/*.txt; do \

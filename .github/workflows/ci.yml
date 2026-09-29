@@ -7,34 +7,35 @@ on:
     branches: [main]
 
 env:
-  GO_VERSION: '1.25'
+  RUST_VERSION: 'stable'
   PYTHON_VERSION: '3.12'
   NODE_VERSION: '20'
 
 jobs:
-  lint-go:
-    name: Lint Go
+  lint-rust:
+    name: Lint Rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
 
-      - name: Check go vet
-        run: go vet ./...
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
 
       - name: Check formatting
-        run: |
-          unformatted=$(gofmt -l -s .)
-          if [ -n "$unformatted" ]; then
-            echo "Unformatted files:"
-            echo "$unformatted"
-            exit 1
-          fi
+        run: cargo fmt --check
+        working-directory: rust
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        working-directory: rust
 
   build:
     name: Build
@@ -42,32 +43,44 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
+          toolchain: ${{ env.RUST_VERSION }}
 
-      - name: Build proxy
-        run: go build -o /tmp/fortresswaf ./cmd/proxy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
 
-      - name: Verify binary
-        run: file /tmp/fortresswaf && ls -lh /tmp/fortresswaf
+      - name: Build release
+        run: cargo build --release --locked
+        working-directory: rust
 
-  test-go:
-    name: Test Go
+      - name: Verify binaries
+        run: |
+          file rust/target/release/fortresswaf
+          ls -lh rust/target/release/fortresswaf rust/target/release/fortressctl rust/target/release/healthcheck
+
+  test-rust:
+    name: Test Rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
+          toolchain: ${{ env.RUST_VERSION }}
 
-      - name: Run unit tests
-        run: go test ./... -v -count=1
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Run tests (includes attack-corpus parity)
+        run: cargo test --workspace --locked
+        working-directory: rust
 
   test-python:
     name: Test Python ML Engine

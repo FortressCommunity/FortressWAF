@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Rewritten in Rust; the Go backend was removed.** The whole backend is now a
+  cargo workspace under `rust/` with five crates (`core`, `config`, `services`,
+  `proxy`, `ctl`). The Dockerfile, `Makefile`, CI workflows, `install.sh`, and
+  pre-commit config all build and lint Rust. Rule IDs, scores, decision
+  ordering, threshold semantics, and config defaults are preserved, and the
+  attack corpus is replayed to the same documented detection floors with zero
+  false positives on the benign corpus (288 tests pass; `cargo clippy` and
+  `cargo fmt --check` are clean).
+- Detection parity is enforced by `rust/crates/proxy/tests/attack_corpus.rs`,
+  which fails the build if any category drops below its floor.
+- TLS termination uses `rustls` (no OpenSSL); ACME auto-provisioning is not
+  implemented — supply `tls.cert_file` / `tls.key_file`.
+
+### Removed
+- The Go backend (`cmd/`, `internal/`, `go.mod`, `go.sum`, `.golangci.yml`,
+  `tools/`, the Go test files, and `benchmark.txt`). Behavioural differences
+  introduced by the rewrite are listed in `rust/DEVIATIONS.md`.
+
 ### Added
 - **Auto-ban on DDoS and repeat bot offenders.** A per-IP flood (`DDoS001`) now
   bans the source address for `ddos.ban_seconds` (default 10m), and an address

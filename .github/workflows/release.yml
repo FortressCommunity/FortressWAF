@@ -8,7 +8,7 @@ on:
 
 jobs:
   release:
-    name: Release v${{ github.ref_name }}
+    name: Release ${{ github.ref_name }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -20,52 +20,52 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
         with:
-          go-version: '1.25'
-          cache: true
+          workspaces: rust
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Build release binaries (linux amd64)
+        run: cargo build --release --locked
+        working-directory: rust
 
-      - name: Set up Cosign
-        uses: sigstore/cosign-installer@v3
-
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v5
-        with:
-          version: latest
-          args: release --clean --timeout 60m
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+      - name: Package binaries
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          for bin in fortresswaf fortressctl healthcheck; do
+            cp "rust/target/release/${bin}" "dist/${bin}"
+          done
+          tar -czf "dist/fortresswaf-${tag}-linux-amd64.tar.gz" -C dist fortresswaf fortressctl healthcheck
+          cp deploy/config.yaml dist/ || true
+          cp LICENSE dist/ || true
 
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
         with:
-          image: fortresswaf/proxy:${{ github.ref_name }}
+          path: rust
           format: spdx-json
-          output-file: sbom.spdx.json
+          output-file: dist/sbom.spdx.json
+          syft-version: latest
 
-      - name: Upload SBOM
-        uses: actions/upload-artifact@v4
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
         with:
-          name: sbom
-          path: sbom.spdx.json
+          files: |
+            dist/fortresswaf-*.tar.gz
+            dist/sbom.spdx.json
 
-      - name: Sign images
-        run: |
-          cosign sign --yes fortresswaf/proxy:${{ github.ref_name }}
-          cosign sign --yes fortresswaf/ml-engine:${{ github.ref_name }}
-          cosign sign --yes fortresswaf/dashboard:${{ github.ref_name }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Publish Helm chart
+      - name: Build and push proxy image
         run: |
-          helm package deploy/helm/
-
-      - name: Publish Docker images (multi-arch)
-        run: |
-          docker buildx imagetools create \
-            fortresswaf/proxy:${{ github.ref_name }} \
-            --tag fortresswaf/proxy:${{ github.ref_name }}
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -f Dockerfile \
+            -t fortresswaf/proxy:${{ github.ref_name }} \
+            --push .

@@ -48,9 +48,9 @@ jwt:
 
 ### Scope & Role Check
 
-```go
-validator.HasScope(claims, "admin:write")
-validator.HasRole(claims, "admin")
+```rust
+validator.has_scope(&claims, "admin:write");
+validator.has_role(&claims, "admin");
 ```
 
 ## OAuth 2.0 Token Introspection

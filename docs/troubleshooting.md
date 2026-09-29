@@ -85,9 +85,9 @@ curl -H "Authorization: Bearer $TOKEN" \
 curl -H "Authorization: Bearer $TOKEN" \
   http://localhost:8080/api/v1/metrics | jq '.latency_p50_ms, .latency_p95_ms, .latency_p99_ms'
 
-# 2. Enable profiling endpoint
-curl http://localhost:8080/debug/pprof/profile?seconds=30 > profile.pprof
-go tool pprof -http=:8081 profile.pprof
+# 2. Profile the process with perf (Linux) and render a flamegraph
+perf record -g -- ./rust/target/release/fortresswaf --config deploy/config.yaml
+perf script | inferno-flamegraph > flamegraph.svg
 
 # 3. Check upstream latency (network issue?)
 curl -H "Authorization: Bearer $TOKEN" \
@@ -213,8 +213,8 @@ docker stats fortresswaf-proxy
 # or
 ps aux | grep fortresswaf | awk '{print $6/1024 " MB"}'
 
-# Check Go runtime metrics
-curl http://localhost:8080/debug/vars | jq '.memstats.HeapInuse'
+# Check process memory (RSS)
+ps -o rss= -p "$(pgrep -f fortresswaf)" | awk '{print $1/1024 " MB"}'
 ```
 
 **Solutions:**
@@ -478,8 +478,8 @@ curl -H "Authorization: Bearer $TOKEN" \
 # 5. Recent error logs
 journalctl -u fortresswaf --since "1 hour ago" --no-pager | grep -i error | tail -50
 
-# 6. Go runtime profile
-curl http://localhost:8080/debug/vars > debug-vars.json
+# 6. Inspect live counters from the metrics listener
+curl -s http://localhost:9090/metrics | grep fortresswaf_
 
 # 7. Network connectivity test
 curl -v --connect-timeout 5 http://your-upstream-url/health

@@ -1,0 +1,39 @@
+[package]
+name = "fwaf-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fwaf-core = { path = "../core" }
+fwaf-config = { path = "../config" }
+fwaf-services = { path = "../services" }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+parking_lot.workspace = true
+regex.workspace = true
+once_cell.workspace = true
+sha2.workspace = true
+base64.workspace = true
+getrandom.workspace = true
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+rustls = { version = "0.23", features = ["ring"] }
+tokio-rustls = "0.26"
+rustls-pemfile = "2"
+
+[[bin]]
+name = "fortresswaf"
+path = "src/main.rs"
+
+[dev-dependencies]
+fwaf-core = { path = "../core" }
+fwaf-config = { path = "../config" }
+fwaf-services = { path = "../services" }

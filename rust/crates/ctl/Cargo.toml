@@ -1,0 +1,19 @@
+[package]
+name = "fwaf-ctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+clap = { version = "4", features = ["derive"] }
+ureq = "2"
+
+[[bin]]
+name = "fortressctl"
+path = "src/main.rs"
+
+[[bin]]
+name = "healthcheck"
+path = "src/healthcheck.rs"
