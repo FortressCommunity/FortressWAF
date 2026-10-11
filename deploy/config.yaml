@@ -25,9 +25,9 @@
 #                        - no matching config struct at all; they were
 #                          fictional in earlier revisions of this file.
 #   * rules: as a glob of rule files
-#                        - rules are not loaded from disk. Detection comes
-#                          entirely from the built-in inspectors enabled
-#                          below. (The bundled rules/ directory is unused.)
+#                        - superseded by rule_engine.files below, which loads
+#                          and enforces the bundled rules/ directory. The old
+#                          config.rules list stays unused for parity.
 #
 # ${VAR} references are expanded from the environment at load time.
 
@@ -114,6 +114,37 @@ upload: { enabled: true }
 ja3:   { enabled: true }      # only fires on TLS traffic
 desync: { enabled: true }     # HTTP request smuggling (CL.TE / TE.CL)
 parser_hardening: { enabled: true }
+
+# SSRF, open-redirect and CSRF detection (previously absent; see Known
+# Limitations #3 in the README). Each ships monitor-first: a finding is recorded
+# and scored but the request is forwarded. Set block: true to enforce.
+ssrf:
+  enabled: true
+  block: false          # monitor: a "url=" parameter can legitimately be a URL
+  inspect_body: true
+open_redirect:
+  enabled: true
+  block: false          # monitor: an off-site redirect is common in OAuth flows
+  allowed_hosts: []     # add first-party hosts here to whitelist them
+csrf:
+  enabled: true
+  block: false          # the full cross-site signal still blocks (CSRF001)
+  same_site_cookie: false
+
+# Rules loaded from disk (previously unused; see Known Limitations #4 in the
+# README). Every *.yaml under these paths is parsed and enforced as a rule. A
+# file that fails to parse is skipped with a warning, never a startup failure.
+#
+# Disabled by default: the bundled rules are aggressive and false-positive on
+# real browsers. FORTRESS-BOT-003, for example, matches UA substrings including
+# "Moz", which also matches "Mozilla/5.0", so enabling it blocks every browser.
+# Turn the engine on only with rule files you have reviewed; the engine itself
+# is tested (crates/core/src/inspectors/rule_engine.rs).
+rule_engine:
+  enabled: false
+  files:
+    - ../rules/owasp
+    - ../rules/virtual-patches
 
 credential:
   enabled: true
@@ -233,9 +264,11 @@ prometheus:
   port: 9090
 
 # --- ML sidecar -------------------------------------------------------------
-# Honest status: the config field is read (and validated), but the proxy does
-# not yet send requests to the ML engine - detection is rule-based. Wiring is
-# tracked as follow-up work; do not assume traffic is ML-inspected today.
+# The ML sidecar is now in the request path as an *advisory* inspector when this
+# is enabled. A high-confidence classification is monitored by default; set
+# block: true to let it enforce, and only above min_score. A sidecar outage
+# (unreachable, timeout, bad JSON) is always a pass, never a block. The bundled
+# model is untrained, so treat the signal as advisory, not authoritative.
 ml:
   enabled: false
   endpoint: ${ML_ENGINE_URL}
@@ -244,6 +277,7 @@ ml:
   fallback_mode: allow
   min_score: 0.5
   model_name: payload-classifier
+  block: false
 
 # --- SIEM export ------------------------------------------------------------
 siem:

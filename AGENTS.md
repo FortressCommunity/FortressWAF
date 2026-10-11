@@ -23,7 +23,7 @@ A self-hosted Web Application Firewall / API security gateway, written in
 
 ```text
 rust/crates/
-  core/       request model + detection Engine + all 25 inspectors
+  core/       request model + detection Engine + all inspectors
   config/     YAML config: defaults, validation, hot reload
   services/   ratelimit, blocklist, session, geo, reputation, siem, ml,
               tenant, sites, billing, compliance, traincorpus, uaparse
@@ -39,8 +39,9 @@ docs/         design documentation (aspirational — see README Known Limitation
 **Three binaries:** `fortresswaf` (proxy + admin API + metrics),
 `fortressctl` (CLI), `healthcheck` (readiness probe).
 
-**25 inspectors** live in `rust/crates/core/src/inspectors/` (plus
-`captcha`/`grpc`/`soap` in `rust/crates/core/src/middleware.rs`).
+**Inspectors** live in `rust/crates/core/src/inspectors/` (the built-in set,
+including the `ssrf`, `open_redirect`, `csrf`, `rule_engine` and `ml_assist`
+detectors) plus `captcha`/`grpc`/`soap` in `rust/crates/core/src/middleware.rs`.
 
 ---
 
@@ -67,7 +68,7 @@ check `rust/Cargo.toml` first if unsure.
 cargo build --release --locked
 #   -> rust/target/release/{fortresswaf,fortressctl,healthcheck}
 
-# Test everything (288 tests, including the attack-corpus parity test)
+# Test everything (351 tests, including the attack-corpus parity test)
 cargo test --workspace --locked
 
 # Just the detection-parity test, with per-category rates printed
@@ -256,13 +257,17 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 - **`docs/` is aspirational.** It describes an intended product (billing,
   multi-tenancy, enterprise tiers) the code does not implement. Trust the
   README and `deploy/config.yaml`.
-- **`rules/` is not loaded at runtime.** Detection comes from the built-in
-  inspectors only.
-- **The ML sidecar is not in the request path** and its bundled model is
-  untrained. Do not wire it in without saying so.
-- **Some `services/` modules are not wired into the proxy** (`billing`,
-  `tenant`, `geo`, `ratelimit`, `reputation`, `session`). They compile; they are
-  not features.
+- **`rules/` is loaded only through the `rule_engine` inspector, off by
+  default.** When `rule_engine.enabled` is set, `rules/*.yaml` is parsed and
+  enforced; otherwise detection comes from the built-in inspectors only. The
+  bundled rules are too aggressive to enable as shipped (they false-positive on
+  browsers).
+- **The ML sidecar is in the request path only through `ml_assist`, off by
+  default,** and its bundled model is untrained. A hit is monitored unless
+  `ml.block: true`; a sidecar failure is a pass.
+- **`ratelimit` and `reputation` are wired** (off unless their config block
+  enables them). **`billing`, `tenant`, `geo`, `session` are still not wired.**
+  They compile; they are not features.
 - **Do not add `--allow` to silence a lint.** Fix the lint, or (for a
   deliberately Go-shaped construction) document why in the crate's `lib.rs`.
 - **Do not build a client or clone the whole `Config` per request.** The proxy
@@ -298,3 +303,18 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 | What does CI run? | `.github/workflows/ci.yml` |
 
 When this file and the code disagree, **the code wins** — and then fix this file.
+
+<!-- antislop:start -->
+## antislop
+For UI, copy, people, mobile layout, or code comments work, read these installed skill files directly (use these paths even if a same-named global skill exists):
+- Core filter, always on: `antislop`: `.opencode/skills/antislop/SKILL.md`
+- UI / visual: `antislop-ui`: `.opencode/skills/antislop-ui/SKILL.md`
+- Copy & text: `antislop-copywriting`: `.opencode/skills/antislop-copywriting/SKILL.md`
+- People: `antislop-human`: `.opencode/skills/antislop-human/SKILL.md`
+- Mobile / responsive: `antislop-layoutmobile`: `.opencode/skills/antislop-layoutmobile/SKILL.md`
+- Code comments: `antislop-code`: `.opencode/skills/antislop-code/SKILL.md`
+Before starting, follow the core's "Two Usage Modes" section in strict order: explicit session instruction first, then global preference, then ask. A session instruction always wins. For a resolved mode, say `antislop active: <mode> (session override).` or `antislop active: <mode> (global preference).` once before presenting findings or making edits, using the actual mode and source. Acknowledging the user's request without naming the source does not replace this notice.
+Only an explicit choice of antislop during or after selects a session mode. A request to review, audit, or avoid file edits does not select a mode; read the global preference in that case. Another skill's mode does not select antislop's mode.
+If the mode is unresolved, ask during/after and end the response; wait for the answer before any UI review, planning, or concept. For read-only tasks, put the active-mode notice only at the start of the final answer, never in progress messages. For editing tasks, announce before the first edit and omit it from the final answer.
+To update antislop later: `npx antislop-ai --update`, or run `npx antislop-ai` and pick Overwrite them.
+<!-- antislop:end -->

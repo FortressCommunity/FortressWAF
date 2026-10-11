@@ -61,6 +61,14 @@ pub struct AppState {
     /// Hard cap on how long an upstream request may take, so a slow origin
     /// cannot pin a task (and its connection) indefinitely.
     pub upstream_timeout: std::time::Duration,
+    /// Global rate limiter (opt-in via `rate_limit.enabled`). Previously the
+    /// `ratelimit` service compiled but was never called; it is now applied in
+    /// the request path. `None` when disabled.
+    pub rate_limiter: Option<Arc<fwaf_services::ratelimit::RateLimiter>>,
+    /// IP reputation engine (opt-in via `reputation.enabled`). `None` when
+    /// disabled. When enabled, a blocklisted source is refused before
+    /// inspection; a high score adds to the audit metadata.
+    pub reputation: Option<Arc<fwaf_services::reputation::Engine>>,
 }
 
 impl AppState {
@@ -87,6 +95,23 @@ impl AppState {
                 .pool_idle_timeout(Duration::from_secs(90))
                 .build(connector);
 
+        // Opt-in service modules. Each is off unless its config block enables
+        // it, so the default request path is unchanged.
+        let rate_limiter = if cfg.rate_limit.enabled {
+            Some(Arc::new(fwaf_services::ratelimit::RateLimiter::new(
+                fwaf_services::ratelimit::Algorithm::from_str(&cfg.rate_limit.algorithm),
+                cfg.rate_limit.default_rate,
+                cfg.rate_limit.default_burst,
+            )))
+        } else {
+            None
+        };
+        let reputation = if cfg.reputation.enabled {
+            Some(Arc::new(fwaf_services::reputation::Engine::new()))
+        } else {
+            None
+        };
+
         Arc::new(AppState {
             cfg_mgr,
             engine: Arc::new(RwLock::new(engine)),
@@ -104,6 +129,8 @@ impl AppState {
             upstreams: RwLock::new(upstreams),
             upstream_client: Arc::new(upstream_client),
             upstream_timeout: Duration::from_secs(30),
+            rate_limiter,
+            reputation,
         })
     }
 }
@@ -170,6 +197,64 @@ pub async fn proxy_handler(
 
     let client_ip = client_ip_of(&app, &req, &remote_addr);
 
+    // Global rate limiting (opt-in). Applied before inspection, so a flood is
+    // paced even if every individual request would otherwise pass.
+    if let Some(rl) = &app.rate_limiter {
+        let (allowed, rl_dec) =
+            rl.inspect(&client_ip, fwaf_services::ratelimit::Granularity::PerIp);
+        if !allowed {
+            app.metrics.inc(&app.metrics.rate_limited_reqs);
+            record_request(
+                &app,
+                &req,
+                &body_bytes,
+                &remote_addr,
+                "request_rate_limited",
+                "rate_limit",
+                "rate_limited",
+                "",
+                &client_ip,
+            );
+            let ctx = app
+                .engine
+                .read()
+                .context_from_request(&build_ctx_from_parts(&req, &body_bytes, &remote_addr));
+            let mut resp = if pipeline::client_wants_json(&ctx) {
+                json_response(
+                    429,
+                    serde_json::json!({
+                        "error": "rate_limited",
+                        "limit": rl_dec.limit,
+                        "retry_after": rl_dec.retry_after,
+                        "request_id": pipeline::block_request_id(&ctx),
+                    }),
+                )
+            } else {
+                let page = pipeline::flood_page(&ctx, rl_dec.limit as i32, rl_dec.retry_after);
+                let mut r = Response::new(Full::new(Bytes::from(page)));
+                *r.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+                r.headers_mut().insert(
+                    hyper::header::CONTENT_TYPE,
+                    "text/html; charset=utf-8".parse().unwrap(),
+                );
+                r
+            };
+            resp.headers_mut().insert(
+                hyper::header::RETRY_AFTER,
+                rl_dec.retry_after.max(0).to_string().parse().unwrap(),
+            );
+            resp.headers_mut().insert(
+                "X-RateLimit-Limit",
+                rl_dec.limit.to_string().parse().unwrap(),
+            );
+            resp.headers_mut()
+                .insert("X-RateLimit-Remaining", "0".parse().unwrap());
+            resp.headers_mut()
+                .insert("X-FortressWAF-Action", "rate_limit".parse().unwrap());
+            return Ok(resp);
+        }
+    }
+
     // A banned address is refused before inspection.
     if app.bans.is_banned(&client_ip) {
         app.metrics.inc(&app.metrics.blocked_requests);
@@ -199,6 +284,41 @@ pub async fn proxy_handler(
         resp.headers_mut()
             .insert("X-FortressWAF-Rule", "BAN001".parse().unwrap());
         return Ok(resp);
+    }
+
+    // IP reputation (opt-in). A blocklisted source (score 100) is refused
+    // before inspection; a lower score does not block, only records.
+    if let Some(rep) = &app.reputation {
+        let (_, score) = rep.inspect(&client_ip);
+        if score >= 100.0 {
+            app.metrics.inc(&app.metrics.blocked_requests);
+            record_request(
+                &app,
+                &req,
+                &body_bytes,
+                &remote_addr,
+                "request_blocked",
+                "reputation_blocklist",
+                "blocked",
+                "",
+                &client_ip,
+            );
+            let dec = fwaf_core::action::Decision::new(Action::Block, 100.0)
+                .with_rule_id("REP001")
+                .with_rule_name("Blocked by IP reputation")
+                .with_severity("high")
+                .with_evidence("source address is on the reputation blocklist");
+            let ctx = app
+                .engine
+                .read()
+                .context_from_request(&build_ctx_from_parts(&req, &body_bytes, &remote_addr));
+            let mut resp = blocked_response(&ctx, &dec);
+            resp.headers_mut()
+                .insert("X-FortressWAF-Action", "block".parse().unwrap());
+            resp.headers_mut()
+                .insert("X-FortressWAF-Rule", "REP001".parse().unwrap());
+            return Ok(resp);
+        }
     }
 
     let cfg = app.cfg_mgr.get();

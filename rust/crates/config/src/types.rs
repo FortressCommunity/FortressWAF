@@ -76,6 +76,10 @@ pub struct MlConfig {
     pub fallback_mode: String,
     pub min_score: f64,
     pub model_name: String,
+    /// Let a high-confidence classification block. Default false: an ML hit is
+    /// monitored, not enforced. See `rust/DEVIATIONS.md` §16.
+    #[serde(default)]
+    pub block: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -413,6 +417,53 @@ pub struct GrpcConfig {
     pub rate_limit: i32,
 }
 
+/// SSRF inspector configuration (README Known Limitation #3).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SsrfConfig {
+    pub enabled: bool,
+    /// Promote a high-confidence match to a block. Default false: matches are
+    /// recorded and scored but forwarded.
+    pub block: bool,
+    /// Inspect the request body in addition to the query and headers.
+    pub inspect_body: bool,
+}
+
+/// Open-redirect inspector configuration (README Known Limitation #3).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpenRedirectConfig {
+    pub enabled: bool,
+    /// Promote an off-site redirect to a block. Default false.
+    pub block: bool,
+    /// Hosts treated as first-party; a redirect to them is not a finding.
+    pub allowed_hosts: Vec<String>,
+}
+
+/// CSRF inspector configuration (README Known Limitation #3).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CsrfConfig {
+    pub enabled: bool,
+    /// Promote the soft case (unsafe method, credential, no token) to a block.
+    /// The full cross-site signal blocks regardless.
+    pub block: bool,
+    /// The deployment uses SameSite=Lax/Strict cookies, so the browser already
+    /// stops cross-site sends; skip the cross-site rule.
+    pub same_site_cookie: bool,
+}
+
+/// Disk-loaded rule engine configuration (README Known Limitation #4).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RuleEngineConfig {
+    pub enabled: bool,
+    /// Rule files or directories to load. A directory is scanned recursively
+    /// for `*.yaml`/`*.yml`. Relative paths resolve against the process working
+    /// directory.
+    pub files: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PrometheusConfig {
@@ -546,6 +597,10 @@ pub struct Config {
     pub adaptive: AdaptiveConfig,
     pub ebpf: EbpfConfig,
     pub parser_hardening: FeatureConfig,
+    pub ssrf: SsrfConfig,
+    pub open_redirect: OpenRedirectConfig,
+    pub csrf: CsrfConfig,
+    pub rule_engine: RuleEngineConfig,
     pub shadow_mode: FeatureConfig,
     pub learning_mode: FeatureConfig,
     pub performance: PerformanceConfig,

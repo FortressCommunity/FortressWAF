@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **SSRF, open-redirect and CSRF inspectors** (`ssrf`, `open_redirect`,
+  `csrf`), closing README Known Limitations #3. All three are monitor-first
+  (a hit is scored and audited, the request is forwarded) and enforce only when
+  `block: true`. SSRF covers loopback/private/link-local/cloud-metadata targets,
+  dangerous schemes, and numeric-IP / userinfo / backslash parsing tricks;
+  open-redirect flags off-site values in redirect-shaped parameters (undoing
+  `//`, `/\`, and percent encoding, with a first-party allow list); CSRF blocks
+  an unsafe method carrying a credential cookie from a cross-site origin with no
+  token (`CSRF001`), and monitors the softer same-origin case (`CSRF002`).
+- **Disk-loaded rule engine** (`rule_engine`), closing README Known Limitation
+  #4. It parses and enforces the bundled `rules/*.yaml` (`condition.any`/`all`,
+  string or list `pattern`, nested groups). Ships **disabled**: the bundled
+  rules false-positive on real browsers.
+- **ML-assisted classification** (`ml_assist`), closing README Known Limitation
+  #1 for the enforcement path. Opt-in via `ml.enabled`; calls the sidecar's
+  `/v1/classify` in the request path, monitors unless `ml.block: true`, and
+  treats a sidecar outage as a pass.
+- **Global rate limiting and IP reputation are wired into the request path**
+  (`rate_limit.enabled`, `reputation.enabled`), off by default.
+- The new inspectors report a capped score (15) in monitor mode, so a monitor
+  hit cannot tip the engine's cumulative challenge/block threshold. See
+  `rust/DEVIATIONS.md` §16.
+
 ### Changed
 - **Rewritten in Rust; the Go backend was removed.** The whole backend is now a
   cargo workspace under `rust/` with five crates (`core`, `config`, `services`,

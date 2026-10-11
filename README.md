@@ -31,7 +31,7 @@ flowchart LR
     UP --> OR[Origin Server]
     SC -.-> LOG[Audit Log + JSON Logging]
     SC -.-> PROM[Prometheus Metrics]
-    SC -.-> ML[ML Sidecar<br/>contract defined, not wired]
+    SC -.-> ML[ML Sidecar<br/>advisory, opt-in]
 ```
 
 ---
@@ -64,8 +64,12 @@ Every module below is a built-in inspector. Those marked *stable* are enabled by
 | JWT / OAuth 2.0 introspection / mTLS / CAPTCHA | — | implemented, off by default |
 | Adaptive challenge (JS / CAPTCHA interstitial) | — | experimental, off by default |
 | Behavioural scoring (velocity, path entropy, reputation) | — | experimental, off by default |
+| SSRF, open redirect, CSRF | SSRF001+, REDIR001, CSRF001+ | implemented, off by default — real detectors, monitor-first (a hit is recorded, not enforced) until `block: true` |
+| Disk-loaded rules (`rule_engine`) | per-file rule ids | implemented, off by default — parses and enforces the bundled `rules/*.yaml`; disabled by default because the bundled rules false-positive on real browsers |
+| ML-assisted classification (`ml_assist`) | ML001 | implemented, off by default — calls the sidecar's `/v1/classify` in the request path; a hit is monitored unless `ml.block: true`, and a sidecar outage is always a pass |
 | Response body inspection (data leakage) | LEAK001–008 | implemented — blocks responses leaking private keys, cloud keys, JWTs, DB DSNs, password hashes, or stack traces |
 | eBPF telemetry, WASM sandbox | — | **not implemented** — stubs behind build tags |
+| Global rate limiting (`rate_limit`), IP reputation (`reputation`) | — | implemented, off by default — the service modules are now applied in the request path when their config block enables them |
 
 Detection is measured, not assumed: the whole `ml-engine` training corpus
 (1,402 payloads across 15 categories) is replayed through the engine in
@@ -337,8 +341,9 @@ docs/                Design documentation (see caveat in Known Limitations)
 ```
 
 `services/` also contains packages that compile but are **not wired into the
-proxy**: `billing`, `tenant`, `geo`, `ratelimit`, `reputation`, `session`.
-They are leftover scaffolding and should not be read as working features.
+proxy**: `billing`, `tenant`, `geo`, `session`. They are leftover scaffolding
+and should not be read as working features. `ratelimit` and `reputation` are
+wired into the request path when their config block enables them.
 
 ---
 
@@ -380,8 +385,10 @@ rust/crates/
   lookup fails, the GeoIP database is absent, or WASM is disabled.
 - **The PostgreSQL `initDatabase` ping is not wired** (the original was a
   goroutine that blocked forever without doing anything observable).
-- **Rule files under `rules/` are not loaded**; detection comes entirely from
-  the built-in inspectors, as before.
+- **Rule files under `rules/` are loaded by the `rule_engine` inspector when
+  `rule_engine.enabled` is set** (off by default; the bundled rules
+  false-positive on real browsers, see Known Limitations #4). Detection still
+  comes from the built-in inspectors when it is off.
 
 The port is verified, not asserted: the attack-corpus test
 (`rust/crates/proxy/tests/attack_corpus.rs`) fails the build if any category
@@ -426,29 +433,41 @@ the benign corpus.
 
 Stated plainly, because hiding them would be worse than having them:
 
-1. **The ML sidecar is not in the request path.** `rust/crates/services/src/ml.rs`
-   and `ml-engine/api/app.py` agree on a request/response contract, but the
-   proxy never calls it — detection is entirely rule-based. The bundled model is
-   also untrained: `ml-engine` answers from heuristic scoring, and it mislabels
-   payloads (a SQLi string is returned as `command-injection` at ~8%
-   confidence). The sidecar starts and reports healthy in the docker stack, and
-   its `/v1/classify` and `/v1/inspect` endpoints work, but treat the ML
-   component as scaffolding, not a working classifier.
+1. **The ML sidecar is now in the request path, but advisory and off by
+   default.** `ml_assist` calls `/v1/classify` for every request when
+   `ml.enabled: true`; a hit is monitored unless `ml.block: true`, and any
+   sidecar failure (unreachable, timeout, bad JSON) is a pass, never a block.
+   The bundled model is still untrained: `ml-engine` answers from heuristic
+   scoring and mislabels payloads (a SQLi string is returned as
+   `command-injection` at ~8% confidence). So the wiring is real, but treat the
+   ML component as an advisory signal, not a working classifier.
 2. **Compliance is verification, not enforcement.** The compliance module
    checks a subset of controls against live runtime state (is the WAF enabled?
    are the SQLi/XSS inspectors on? is the audit log actually recording?).
    PCI-DSS has 10 such automated controls; the remaining 15 per framework need
    evidence no software can supply and are labelled `manual`. With TLS
    disabled, as in the shipped config, the TLS-dependent frameworks report 0%.
-3. **No inspector for SSRF, open redirect, or CSRF.** These categories are
-   excluded from the corpus detection-rate test rather than silently asserted.
-4. **Rules are not loaded from disk.** The bundled `rules/` directory is
-   unused; detection comes entirely from the built-in inspectors. A config
-   glob for rule files parses but is not read.
+3. **SSRF, open redirect, and CSRF have dedicated detectors, off by default.**
+   `ssrf`, `open_redirect`, and `csrf` are real inspectors (see the feature
+   table) that were previously missing. Each is monitor-first: a hit is scored
+   and audited but the request is forwarded, because an SSRF-shaped `url=`
+   parameter or an off-site redirect is often legitimate. Set `block: true` on
+   an inspector to enforce it. They are **not** in the attack-corpus rate table,
+   which replays only the payload categories the built-in inspectors were
+   benchmarked on.
+4. **Rules are loaded from disk, but the bundled rules stay off by default.**
+   `rule_engine.files` parses and enforces `rules/*.yaml` (a new `rule_engine`
+   inspector). It ships **disabled**, because the bundled rules false-positive
+   on ordinary traffic: `FORTRESS-BOT-003`, for example, matches the UA substring
+   `Moz`, which also matches `Mozilla/5.0`, so enabling it blocks every browser.
+   Turn it on only with rule files you have reviewed. The engine itself is
+   tested (`crates/core/src/inspectors/rule_engine.rs`).
 5. **Some service modules compile but are not wired into the proxy**:
-   `billing`, `tenant`, `geo`, `ratelimit`, `reputation`, `session` under
-   `rust/crates/services/`. They are leftover scaffolding and should not be read
-   as working features.
+   `billing`, `tenant`, `geo`, `session` under `rust/crates/services/`. They are
+   leftover scaffolding and should not be read as working features. (`ratelimit`
+   and `reputation` were in this list and are now applied in the request path
+   when `rate_limit.enabled` / `reputation.enabled` is set; see the feature
+   table.)
 6. **Response body inspection detects leaks, within a 1 MiB window.** The
    upstream response is buffered (up to 1 MiB) and scanned for eight classes of
    leaked secret before any byte reaches the client; a hit is blocked with 502

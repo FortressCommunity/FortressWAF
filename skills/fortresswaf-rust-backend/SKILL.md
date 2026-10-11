@@ -47,7 +47,7 @@ skill.
 
 ```text
 rust/crates/core/src/engine.rs        Engine pipeline, decision ordering
-rust/crates/core/src/inspectors/*.rs  the 25 inspectors (one file each)
+rust/crates/core/src/inspectors/*.rs  the built-in inspectors (one file each)
 rust/crates/core/src/middleware.rs    captcha / grpc / soap inspectors + ResponseWriter
 rust/crates/core/src/context.rs       RequestContext (what inspectors read)
 rust/crates/core/src/action.rs        Decision / Action
