@@ -264,6 +264,10 @@ pub fn handle_list_inspectors(engine: &Engine, audit: Option<&Arc<AuditLog>>) ->
         ("parser_hardener", "PARSER_"),
         ("credential_protection", "CRED"),
         ("response_inspect", "LEAK"),
+        ("ssrf", "SSRF"),
+        ("open_redirect", "REDIR"),
+        ("csrf", "CSRF"),
+        ("ml_assist", "ML"),
     ];
 
     let entries = audit

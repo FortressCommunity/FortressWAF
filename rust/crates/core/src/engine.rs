@@ -80,6 +80,18 @@ pub struct EngineConfig {
     pub websocket: Option<Arc<dyn Inspector>>,
     pub response_inspect: Option<Arc<dyn Inspector>>,
     pub ebpf: Option<Arc<dyn Inspector>>,
+    /// SSRF detector (README Known Limitation #3). Opt-in via `ssrf.enabled`.
+    pub ssrf: Option<Arc<dyn Inspector>>,
+    /// Open-redirect detector (README Known Limitation #3). Opt-in.
+    pub open_redirect: Option<Arc<dyn Inspector>>,
+    /// CSRF detector (README Known Limitation #3). Opt-in.
+    pub csrf: Option<Arc<dyn Inspector>>,
+    /// Disk-loaded rule engine (README Known Limitation #4). Opt-in via
+    /// `rule_engine.enabled`.
+    pub rule_engine: Option<Arc<dyn Inspector>>,
+    /// ML-assist inspector (README Known Limitation #1). Opt-in via
+    /// `ml.enabled`.
+    pub ml_assist: Option<Arc<dyn Inspector>>,
 }
 
 /// The detection engine. Port of the Go `Engine`.
@@ -127,6 +139,11 @@ impl Engine {
             cfg.websocket,
             cfg.response_inspect,
             cfg.ebpf,
+            cfg.ssrf,
+            cfg.open_redirect,
+            cfg.csrf,
+            cfg.rule_engine,
+            cfg.ml_assist,
         ]
         .into_iter()
         .flatten()

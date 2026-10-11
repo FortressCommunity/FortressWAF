@@ -17,6 +17,7 @@ pub fn default_config() -> Config {
             fallback_mode: "allow".to_string(),
             min_score: 0.5,
             model_name: String::new(),
+            block: false,
         },
         redis: RedisConfig {
             enabled: false,
@@ -209,6 +210,25 @@ pub fn default_config() -> Config {
             sample_rate: 10,
         },
         parser_hardening: FeatureConfig { enabled: true },
+        ssrf: SsrfConfig {
+            enabled: false,
+            block: false,
+            inspect_body: true,
+        },
+        open_redirect: OpenRedirectConfig {
+            enabled: false,
+            block: false,
+            allowed_hosts: vec![],
+        },
+        csrf: CsrfConfig {
+            enabled: false,
+            block: false,
+            same_site_cookie: false,
+        },
+        rule_engine: RuleEngineConfig {
+            enabled: false,
+            files: vec![],
+        },
         shadow_mode: FeatureConfig { enabled: false },
         learning_mode: FeatureConfig { enabled: false },
         performance: PerformanceConfig {

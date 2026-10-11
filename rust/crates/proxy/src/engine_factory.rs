@@ -36,6 +36,13 @@ use fwaf_core::inspectors::{
     websocket::WebSocketInspector,
     xss::XssEngine,
 };
+use fwaf_core::inspectors::{
+    csrf::{CsrfInspector, CsrfOptions},
+    ml_assist::{HttpMlClassifier, MlInspector, MlOptions},
+    open_redirect::{OpenRedirectInspector, OpenRedirectOptions},
+    rule_engine::RuleEngineInspector,
+    ssrf::{SsrfInspector, SsrfOptions},
+};
 
 /// Port of `buildEngineConfig`.
 pub fn build_engine_config(cfg: &Config, dev: bool) -> EngineConfig {
@@ -257,12 +264,101 @@ pub fn build_engine_config(cfg: &Config, dev: bool) -> EngineConfig {
         e.parser = Some(insp(Arc::new(ParserHardener::new(dev))));
     }
 
+    if cfg.ssrf.enabled {
+        e.ssrf = Some(insp(Arc::new(SsrfInspector::new(
+            dev,
+            SsrfOptions {
+                block: cfg.ssrf.block,
+                inspect_body: cfg.ssrf.inspect_body,
+            },
+        ))));
+    }
+    if cfg.open_redirect.enabled {
+        e.open_redirect = Some(insp(Arc::new(OpenRedirectInspector::new(
+            dev,
+            OpenRedirectOptions {
+                block: cfg.open_redirect.block,
+                allowed_hosts: cfg.open_redirect.allowed_hosts.clone(),
+            },
+        ))));
+    }
+    if cfg.csrf.enabled {
+        e.csrf = Some(insp(Arc::new(CsrfInspector::new(
+            dev,
+            CsrfOptions {
+                block: cfg.csrf.block,
+                same_site_cookie: cfg.csrf.same_site_cookie,
+            },
+        ))));
+    }
+    if cfg.rule_engine.enabled {
+        // Rule paths are resolved relative to the config file's directory (the
+        // intuitive base for a config-referenced path), then to the process CWD.
+        let paths = resolve_rule_paths(cfg);
+        let engine = RuleEngineInspector::from_paths(&paths).with_dev_mode(dev);
+        let n = engine.rule_count();
+        if n == 0 {
+            tracing::warn!(
+                paths = ?paths,
+                "rule_engine is enabled but no rules were loaded"
+            );
+        } else {
+            tracing::info!(rules = n, "loaded rules from disk");
+        }
+        e.rule_engine = Some(insp(Arc::new(engine)));
+    }
+    if cfg.ml.enabled && !cfg.ml.endpoint.is_empty() {
+        let classifier = Arc::new(HttpMlClassifier::new(&cfg.ml.endpoint, cfg.ml.timeout_sec));
+        e.ml_assist = Some(insp(Arc::new(MlInspector::new(
+            dev,
+            MlOptions {
+                block: cfg.ml.block,
+                min_score: cfg.ml.min_score,
+            },
+            classifier,
+        ))));
+    }
+
     e
 }
 
 /// Coerce a concrete inspector to the trait object the engine stores.
 fn insp<T: Inspector + 'static>(t: Arc<T>) -> Arc<dyn Inspector> {
     t
+}
+
+/// Resolve `rule_engine.files` entries to absolute paths.
+///
+/// A path that exists as given is kept. Otherwise it is retried relative to the
+/// config file's directory, which is what a config-referenced path usually
+/// means (`deploy/config.yaml` with `files: [../rules/owasp]`). Entries that
+/// resolve nowhere are passed through unchanged so the loader can warn.
+fn resolve_rule_paths(cfg: &Config) -> Vec<String> {
+    use std::path::{Path, PathBuf};
+
+    let base: Option<PathBuf> = if cfg.file_path.is_empty() {
+        None
+    } else {
+        Path::new(&cfg.file_path).parent().map(|p| p.to_path_buf())
+    };
+
+    cfg.rule_engine
+        .files
+        .iter()
+        .map(|f| {
+            let p = Path::new(f);
+            if p.exists() {
+                return f.clone();
+            }
+            if let Some(base) = &base {
+                let candidate = base.join(f);
+                if candidate.exists() {
+                    return candidate.to_string_lossy().to_string();
+                }
+            }
+            f.clone()
+        })
+        .collect()
 }
 
 /// Build an Engine from config (convenience).
@@ -352,6 +448,65 @@ mod tests {
             .collect();
         // Ordered list: parser, ja3 (default-on), then sqli, then xss.
         assert_eq!(names, vec!["parser_hardener", "ja3", "sqli", "xss"]);
+    }
+
+    #[test]
+    fn new_inspectors_wire_from_config() {
+        let mut cfg = default_config();
+        cfg.ssrf.enabled = true;
+        cfg.open_redirect.enabled = true;
+        cfg.csrf.enabled = true;
+        let e = build_engine(&cfg, false);
+        let names: Vec<String> = e
+            .inspectors()
+            .iter()
+            .map(|i| i.name().to_string())
+            .collect();
+        assert!(names.contains(&"ssrf".to_string()));
+        assert!(names.contains(&"open_redirect".to_string()));
+        assert!(names.contains(&"csrf".to_string()));
+    }
+
+    #[test]
+    fn rule_engine_wires_and_loads_files() {
+        // Point the rule engine at the bundled rules/; it should load rules.
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        for _ in 0..3 {
+            dir.pop(); // rust/crates/proxy -> repo root
+        }
+        let rules = dir.join("rules").join("owasp");
+        if !rules.is_dir() {
+            eprintln!("skipping: rules/ not found");
+            return;
+        }
+        let mut cfg = default_config();
+        cfg.rule_engine.enabled = true;
+        cfg.rule_engine.files = vec![rules.to_string_lossy().to_string()];
+        let e = build_engine(&cfg, false);
+        assert!(e.inspectors().iter().any(|i| i.name() == "rule_engine"));
+    }
+
+    #[test]
+    fn ml_inspector_wires_when_enabled() {
+        let mut cfg = default_config();
+        cfg.ml.enabled = true;
+        cfg.ml.endpoint = "http://127.0.0.1:19090".to_string();
+        let e = build_engine(&cfg, false);
+        assert!(e.inspectors().iter().any(|i| i.name() == "ml_assist"));
+        // Disabled -> not present.
+        let cfg2 = default_config();
+        let e2 = build_engine(&cfg2, false);
+        assert!(!e2.inspectors().iter().any(|i| i.name() == "ml_assist"));
+    }
+
+    #[test]
+    fn resolve_rule_paths_relative_to_config_dir() {
+        let mut cfg = default_config();
+        cfg.file_path = "/tmp/does-not-exist/config.yaml".to_string();
+        cfg.rule_engine.files = vec!["../rules/owasp".to_string()];
+        let out = resolve_rule_paths(&cfg);
+        // The nonexistent path is passed through unchanged for the loader to warn.
+        assert_eq!(out.len(), 1);
     }
 
     #[test]

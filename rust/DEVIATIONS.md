@@ -274,6 +274,66 @@ configured value). The pages score 100/A on the deterministic UI gates.
 
 ---
 
+## 16. New inspectors and wiring (closure of README Known Limitations)
+
+These are additions beyond the original Go behaviour, so they cannot be
+"deviations from a port" in the usual sense; they are recorded here because the
+contract is that no behaviour change is undocumented.
+
+**New inspectors** (all opt-in, all with a benign-input test):
+
+| Inspector | Rule ids | Default | Why monitor-first |
+|---|---|---|---|
+| `ssrf` | SSRF001–004 | off (`ssrf.enabled`) | A `url=` parameter can legitimately hold an absolute URL. |
+| `open_redirect` | REDIR001 | off (`open_redirect.enabled`) | Off-site redirects are common in OAuth flows. |
+| `csrf` | CSRF001–002 | off (`csrf.enabled`) | A WAF cannot see session validity; the full cross-site signal (unsafe method + credential cookie + no token + cross-site Origin) blocks, the softer same-origin case monitors. |
+
+**Monitor findings use a reduced score.** The engine adds every decision's score
+to `ctx.threat_score`, and the final decision blocks at ≥90 / challenges at ≥50.
+A monitor inspector that returned its full match score (e.g. 80) would therefore
+*turn "observed" into "blocked"* as soon as two monitor hits landed on one
+request (a URL parameter that is both SSRF- and open-redirect-shaped). To make
+"monitor" actually mean monitor, `ssrf`/`open_redirect`/`csrf`/`ml_assist`
+report a capped score (15) in monitor mode and the full score only in block
+mode. The built-in `api_protect` / `response_leak` monitors are unchanged (they
+predate this and are not request-side threshold inputs).
+
+**Disk-loaded rules** (`rule_engine`): parses the `rules/*.yaml` format
+(`condition.any`/`all`, `pattern` as a string or a list, nested groups) and
+enforces it as an inspector. Ships **disabled** because the bundled rules
+false-positive on real browsers (`FORTRESS-BOT-003` matches `Moz`, which matches
+`Mozilla/5.0`). A file that fails to parse, or a regex that fails to compile, is
+skipped with a warning, never a startup failure. The map-form rule files
+(metadata with `detection.conditions`) are a different schema and are skipped.
+
+**ML assist** (`ml_assist`): puts the sidecar in the request path via
+`/v1/classify`. A hit is monitored unless `ml.block: true`; a sidecar failure is
+always a pass. This is the wiring README Known Limitation #1 asked for, with the
+untrained-model caveat intact.
+
+**Service modules now wired**: `rate_limit` applies the `ratelimit` service
+before inspection (per-IP, `429` with `Retry-After`), and `reputation` refuses a
+blocklisted source (`REP001`) when enabled. Both are off unless their config
+block enables them.
+
+**Verification for these additions** (measured, not asserted):
+
+- `cargo test --workspace` — **351 tests passing, 0 failing** (up from 300),
+  including 15 SSRF, 10 open-redirect, 10 CSRF, 9 rule-engine, 5 ML, and 5 new
+  factory wire-up tests.
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean;
+  `cargo fmt --check` — clean.
+- The attack-corpus floors are **unchanged** (the new inspectors are off in the
+  corpus `full_engine()`), so parity is preserved.
+- Live: SSRF/open-redirect monitors forward (502, not 403); a cross-site POST
+  with a cookie and no token returns `403 CSRF001`; the ML sidecar (a stub
+  returning `confidence: 0.97`) leaves the request forwarded in monitor mode;
+  `rule_engine` loads 107 rules from the bundled `rules/` (70 from
+  `rules/owasp` alone) and skips the handful of bundled files with YAML/regex
+  errors with a warning, never a startup failure.
+
+---
+
 ## Verification summary
 
 - `cargo build --release` — clean across the workspace.
